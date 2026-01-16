@@ -2,20 +2,57 @@
 import { Student, ClassConfig } from './types';
 import { DEFAULT_ACADEMIC_CUTOFF_MONTH, DEFAULT_ACADEMIC_CUTOFF_DAY } from './constants';
 
-export const parseDate = (dateStr: string) => {
+/**
+ * Robustly parses a date string into a Date object.
+ * Supports: MM/DD/YYYY, MM-DD-YYYY, YYYY-MM-DD, M/D/YY, and MMDDYYYY.
+ */
+export const parseDate = (dateStr: string): Date | null => {
   if (!dateStr) return null;
-  // Standard format YYYY-MM-DD
-  if (dateStr.includes('-')) {
-    const [year, month, day] = dateStr.split('-').map(Number);
-    return new Date(year, month - 1, day);
+  const cleaned = dateStr.trim();
+
+  // Try standard separators
+  const parts = cleaned.split(/[\/\-\.]/);
+  
+  if (parts.length === 3) {
+    let m, d, y;
+    // Check if it's YYYY-MM-DD
+    if (parts[0].length === 4) {
+      [y, m, d] = parts.map(Number);
+    } else {
+      [m, d, y] = parts.map(Number);
+    }
+
+    // Handle 2-digit years
+    if (y < 100) y += y > 50 ? 1900 : 2000;
+    
+    const date = new Date(y, m - 1, d);
+    return isNaN(date.getTime()) ? null : date;
   }
-  // Standard format MM/DD/YYYY
-  if (dateStr.includes('/')) {
-    const [month, day, year] = dateStr.split('/').map(Number);
-    const fullYear = year < 100 ? 2000 + year : year;
-    return new Date(fullYear, month - 1, day);
+
+  // Try MMDDYYYY format
+  if (/^\d{8}$/.test(cleaned)) {
+    const m = Number(cleaned.substring(0, 2));
+    const d = Number(cleaned.substring(2, 4));
+    const y = Number(cleaned.substring(4));
+    const date = new Date(y, m - 1, d);
+    return isNaN(date.getTime()) ? null : date;
   }
-  return null;
+
+  // Fallback to native parsing for ISO strings
+  const nativeDate = new Date(cleaned);
+  return isNaN(nativeDate.getTime()) ? null : nativeDate;
+};
+
+/**
+ * Standardizes a date string to MM/DD/YYYY format for storage and display.
+ */
+export const standardizeDateDisplay = (dateStr: string): string => {
+  const d = parseDate(dateStr);
+  if (!d) return dateStr;
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${month}/${day}/${year}`;
 };
 
 export const dateDiffInMonths = (d1: Date, d2: Date) => {
@@ -58,7 +95,7 @@ export const getProjectedTransitionDate = (student: Student, currentClassName: s
   if (currentClass.maxAge !== undefined) {
     const transDate = new Date(dobDate);
     transDate.setMonth(transDate.getMonth() + currentClass.maxAge);
-    return transDate.toISOString().split('T')[0];
+    return standardizeDateDisplay(transDate.toISOString().split('T')[0]);
   }
 
   const today = new Date();
@@ -68,7 +105,7 @@ export const getProjectedTransitionDate = (student: Student, currentClassName: s
                      : today.getFullYear();
 
   const academicCutoff = new Date(cutoffYear, DEFAULT_ACADEMIC_CUTOFF_MONTH - 1, DEFAULT_ACADEMIC_CUTOFF_DAY);
-  return academicCutoff.toISOString().split('T')[0];
+  return standardizeDateDisplay(academicCutoff.toISOString().split('T')[0]);
 };
 
 export const getAgeAtAcademicCutoff = (dob: string, projectionDate: string) => {
@@ -104,7 +141,7 @@ export const getAutomaticClass = (student: Student, projectionDate: string, clas
   }
   
   if (ageAtCutoff >= 3) {
-    const preschool = activeClasses.find(c => c.name.toLowerCase() === "preschool" || c.name.toLowerCase().includes("preschool (3y+)"));
+    const preschool = activeClasses.find(c => c.name.toLowerCase() === "preschool") || activeClasses.find(c => c.name.toLowerCase().includes("preschool"));
     if (preschool) return preschool.name;
   }
 
@@ -116,11 +153,6 @@ export const getAutomaticClass = (student: Student, projectionDate: string, clas
     }
   }
 
-  if (ageInMonths >= 24) {
-    const earlyPS = activeClasses.find(c => c.name.toLowerCase().includes("early preschool"));
-    if (earlyPS) return earlyPS.name;
-  }
-  
   return activeClasses[0]?.name || "Graduated/Withdrawn";
 };
 

@@ -38,7 +38,8 @@ import {
   AlertTriangle,
   Settings2,
   Sparkles,
-  CheckCircle2
+  CheckCircle2,
+  UserCog
 } from 'lucide-react';
 import { 
   Student, 
@@ -54,7 +55,9 @@ import {
 import { 
   getEffectiveClass, 
   formatDetailedAge,
-  getProjectedTransitionDate
+  getProjectedTransitionDate,
+  parseDate,
+  standardizeDateDisplay
 } from './utils';
 import { ClassBarChart } from './components/ClassBarChart';
 import { getEnrollmentInsights } from './services/gemini';
@@ -113,20 +116,7 @@ const autoFormatDate = (input: string): string => {
 };
 
 const flexibleParseDate = (dateStr: string): Date | null => {
-  if (!dateStr) return null;
-  // Handle YYYY-MM-DD (legacy/standard)
-  if (dateStr.includes('-')) {
-    const [y, m, d] = dateStr.split('-').map(Number);
-    return new Date(y, m - 1, d);
-  }
-  // Handle MM/DD/YYYY (new standard)
-  if (dateStr.includes('/')) {
-    const [m, d, y] = dateStr.split('/').map(Number);
-    // If user typed 2 digits for year, assume 20xx
-    const fullYear = y < 100 ? 2000 + y : y;
-    return new Date(fullYear, m - 1, d);
-  }
-  return null;
+  return parseDate(dateStr);
 };
 
 const isExpiringSoon = (dateStr: string | undefined, days: number) => {
@@ -137,12 +127,6 @@ const isExpiringSoon = (dateStr: string | undefined, days: number) => {
   now.setHours(0, 0, 0, 0);
   const diffDays = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
   return diffDays >= 0 && diffDays <= days;
-};
-
-const getStudentNameColor = (s: Student) => {
-  if (s.isStaffChild) return COLORS.staffPurple;
-  if ((s.allergies && s.allergies.length > 0) || (s.medications && s.medications.length > 0)) return COLORS.brandRed;
-  return '#1e293b'; 
 };
 
 const App: React.FC = () => {
@@ -167,10 +151,10 @@ const App: React.FC = () => {
 
   // Modals
   const [isAddingStudent, setIsAddingStudent] = useState(false);
+  const [isEditingStudent, setIsEditingStudent] = useState<Student | null>(null);
   const [isBulkAdding, setIsBulkAdding] = useState(false);
   const [bulkInput, setBulkInput] = useState('');
   const [newStudent, setNewStudent] = useState({ name: '', dob: '' });
-  const [duplicateConflicts, setDuplicateConflicts] = useState<{ incoming: Student; existing: Student }[]>([]);
   const [relModalData, setRelModalData] = useState<{ sourceId: string, search: string, type: 'S' | 'F' } | null>(null);
   const [highlightedStudentId, setHighlightedStudentId] = useState<string | null>(null);
   const [expandedStudentId, setExpandedStudentId] = useState<string | null>(null);
@@ -182,7 +166,7 @@ const App: React.FC = () => {
   const [loadingInsights, setLoadingInsights] = useState(false);
 
   useEffect(() => {
-    const saved = localStorage.getItem('primrose_v12');
+    const saved = localStorage.getItem('primrose_v14');
     if (saved) {
       const data = JSON.parse(saved);
       setStudents(data.students || []);
@@ -197,7 +181,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const data = { students, classSettings, manualAssignments, waitlistedAssignments, manualTransitionDates, projectionDate, classDisplaySettings };
-    localStorage.setItem('primrose_v12', JSON.stringify(data));
+    localStorage.setItem('primrose_v14', JSON.stringify(data));
   }, [students, classSettings, manualAssignments, waitlistedAssignments, manualTransitionDates, projectionDate, classDisplaySettings]);
 
   useEffect(() => {
@@ -291,17 +275,19 @@ const App: React.FC = () => {
   };
 
   const handleAddRelationship = (sourceId: string, targetId: string, type: 'S' | 'F') => {
-    setStudents(prev => prev.map(s => {
-      if (s.id === sourceId) {
-        if (s.relationships.some(r => r.targetId === targetId)) return s;
-        return { ...s, relationships: [...s.relationships, { targetId, type }] };
-      }
-      if (s.id === targetId) {
-        if (s.relationships.some(r => r.targetId === sourceId)) return s;
-        return { ...s, relationships: [...s.relationships, { targetId: sourceId, type }] };
-      }
-      return s;
-    }));
+    setStudents(prev => {
+      return prev.map(s => {
+        if (s.id === sourceId) {
+          if (s.relationships.some(r => r.targetId === targetId)) return s;
+          return { ...s, relationships: [...s.relationships, { targetId, type }] };
+        }
+        if (s.id === targetId) {
+          if (s.relationships.some(r => r.targetId === sourceId)) return s;
+          return { ...s, relationships: [...s.relationships, { targetId: sourceId, type }] };
+        }
+        return s;
+      });
+    });
     showConfirmation(type === 'S' ? "Sibling link established" : "Friend link established");
   };
 
@@ -309,7 +295,16 @@ const App: React.FC = () => {
     e.preventDefault();
     if (!newStudent.name || !newStudent.dob) return;
     const student: Student = {
-      id: crypto.randomUUID(), name: newStudent.name, dob: newStudent.dob, fte: 1.0, isStaffChild: false, isPromo: false, relationships: [], allergies: [], medications: [], emergencyContact: '',
+      id: crypto.randomUUID(), 
+      name: newStudent.name, 
+      dob: standardizeDateDisplay(newStudent.dob), 
+      fte: 1.0, 
+      isStaffChild: false, 
+      isPromo: false, 
+      relationships: [], 
+      allergies: [], 
+      medications: [], 
+      emergencyContact: '',
     };
     setStudents(prev => [...prev, student]);
     setIsAddingStudent(false);
@@ -320,15 +315,41 @@ const App: React.FC = () => {
   const handleBulkAdd = () => {
     const lines = bulkInput.split('\n').filter(l => l.trim());
     const newOnes: Student[] = [];
+    
     lines.forEach(line => {
-      const parts = line.split(',');
+      // Split by tab (Excel) or comma (CSV)
+      const parts = line.split(/[,\t]/);
       if (parts.length < 2) return;
-      newOnes.push({ id: crypto.randomUUID(), name: parts[0].trim(), dob: autoFormatDate(parts[1].trim()), fte: 1.0, isStaffChild: false, isPromo: false, relationships: [], allergies: [], medications: [], emergencyContact: '' });
+      
+      const name = parts[0].trim();
+      const rawDob = parts[1].trim();
+      const dobDate = parseDate(rawDob);
+      
+      if (name && dobDate) {
+        newOnes.push({ 
+          id: crypto.randomUUID(), 
+          name, 
+          dob: standardizeDateDisplay(rawDob), 
+          fte: 1.0, 
+          isStaffChild: false, 
+          isPromo: false, 
+          relationships: [], 
+          allergies: [], 
+          medications: [], 
+          emergencyContact: '' 
+        });
+      }
     });
-    setStudents(prev => [...prev, ...newOnes]);
+
+    if (newOnes.length > 0) {
+      setStudents(prev => [...prev, ...newOnes]);
+      showConfirmation(`Successfully uploaded ${newOnes.length} records`);
+    } else {
+      showConfirmation("No valid records found in import");
+    }
+    
     setIsBulkAdding(false);
     setBulkInput('');
-    showConfirmation(`Imported ${newOnes.length} records`);
   };
 
   const getTransitiveGroup = (startId: string): Student[] => {
@@ -370,18 +391,6 @@ const App: React.FC = () => {
         </div>
       </div>
     );
-  };
-
-  const handleGenerateInsights = async () => {
-    setLoadingInsights(true);
-    try {
-      const result = await getEnrollmentInsights(students, classSettings, projectionDate);
-      setInsights(result || "No strategic insights generated at this time.");
-    } catch (error) {
-      setInsights("Error generating enrollment insights.");
-    } finally {
-      setLoadingInsights(false);
-    }
   };
 
   const updateClassDisplay = (className: string, key: keyof RosterDisplaySettings) => {
@@ -467,7 +476,14 @@ const App: React.FC = () => {
                   <Sparkles className="w-5 h-5 text-indigo-500" />
                   AI Enrollment Insights
                 </h3>
-                <button onClick={handleGenerateInsights} disabled={loadingInsights} className="flex items-center space-x-2 px-6 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest bg-slate-800 text-white hover:bg-slate-900 transition-all disabled:opacity-50">
+                <button onClick={async () => {
+                  setLoadingInsights(true);
+                  try {
+                    const result = await getEnrollmentInsights(students, classSettings, projectionDate);
+                    setInsights(result || "No insights available.");
+                  } catch(e) { setInsights("Error generating insights."); }
+                  finally { setLoadingInsights(false); }
+                }} disabled={loadingInsights} className="flex items-center space-x-2 px-6 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest bg-slate-800 text-white hover:bg-slate-900 transition-all disabled:opacity-50">
                   {loadingInsights ? 'Analyzing...' : 'Generate Analysis'}
                 </button>
               </div>
@@ -542,11 +558,14 @@ const App: React.FC = () => {
                         <div className="h-full flex items-center justify-center py-10 opacity-30 italic text-[11px]">No students assigned</div>
                       ) : enrolled.map(s => {
                         const transitionDate = getProjectedTransitionDate(s, cls.name, classSettings);
+                        const hasSafetyIssues = s.allergies.length > 0 || s.medications.length > 0;
                         return (
                           <div key={s.id} draggable onDragStart={(e) => e.dataTransfer.setData("studentId", s.id)} onMouseEnter={() => setHighlightedStudentId(s.id)} onMouseLeave={() => setHighlightedStudentId(null)} className="group relative flex flex-col p-4 rounded-2xl border border-slate-100 bg-slate-50/30 hover:bg-white hover:shadow-md hover:border-slate-200 transition-all cursor-grab active:cursor-grabbing">
                             <div className="flex items-center space-x-2">
                               <GripVertical className="w-3.5 h-3.5 text-slate-300" />
-                              <span className="font-bold text-[12px] truncate" style={{ color: getStudentNameColor(s) }}>{s.name}</span>
+                              <span className="font-bold text-[12px] truncate text-slate-800">{s.name}</span>
+                              {s.isStaffChild && <ShieldCheck className="w-3.5 h-3.5" style={{ color: COLORS.staffPurple }} />}
+                              {hasSafetyIssues && <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />}
                             </div>
                             {(settings.showDob || settings.showAge || settings.showTransition) && (
                               <div className="mt-2.5 space-y-1.5 pl-6 border-l-2 border-slate-200 ml-1.5">
@@ -562,7 +581,7 @@ const App: React.FC = () => {
                                 )}
                                 {settings.showTransition && transitionDate && (
                                   <p className="text-[9px] font-black text-emerald-600 flex items-center gap-2 uppercase tracking-tighter bg-emerald-50 px-2 py-0.5 rounded-md w-fit mt-1">
-                                    Next: {new Date(transitionDate).toLocaleDateString()}
+                                    Next: {transitionDate}
                                   </p>
                                 )}
                               </div>
@@ -579,7 +598,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Other tabs follow same pattern but ensuring MM/DD/YYYY */}
         {activeTab === Tab.ROSTER && (
           <div className="animate-in fade-in slide-in-from-bottom-6 duration-700 space-y-8">
             <div className="flex items-center justify-between">
@@ -588,9 +606,12 @@ const App: React.FC = () => {
                   <button key={id} onClick={() => setRosterFilter(id)} className={`flex items-center space-x-3 px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-wider transition-all ${rosterFilter === id ? 'bg-white text-slate-800 shadow-md' : 'text-slate-400 hover:text-slate-700'}`} style={{ color: rosterFilter === id ? COLORS.brandGreen : '' }}><Icon className="w-4 h-4" /><span>{label}</span></button>
                 ))}
               </div>
-              {selectedIds.size > 0 && (
-                <button onClick={() => { if(window.confirm(`Permanently remove ${selectedIds.size} records?`)) { setStudents(prev => prev.filter(s => !selectedIds.has(s.id))); setSelectedIds(new Set()); showConfirmation(`Removed ${selectedIds.size} records`); } }} className="bg-rose-600 text-white px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-widest shadow-lg hover:bg-rose-700 transition-all flex items-center gap-3 animate-in fade-in slide-in-from-right-4"><Trash2 className="w-4 h-4" /> Delete ({selectedIds.size})</button>
-              )}
+              <div className="flex items-center gap-4">
+                {selectedIds.size > 0 && (
+                  <button onClick={() => { if(window.confirm(`Permanently remove ${selectedIds.size} records?`)) { setStudents(prev => prev.filter(s => !selectedIds.has(s.id))); setSelectedIds(new Set()); showConfirmation(`Removed ${selectedIds.size} records`); } }} className="bg-rose-600 text-white px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-widest shadow-lg hover:bg-rose-700 transition-all flex items-center gap-3 animate-in fade-in slide-in-from-right-4"><Trash2 className="w-4 h-4" /> Delete ({selectedIds.size})</button>
+                )}
+                <button onClick={() => setIsBulkAdding(true)} className="px-8 py-3 bg-slate-800 text-white rounded-2xl text-[10px] font-bold uppercase tracking-widest hover:bg-slate-900 transition-all flex items-center space-x-2 shadow-lg"><Upload className="w-4 h-4" /><span>Upload Data</span></button>
+              </div>
             </div>
 
             <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden">
@@ -599,14 +620,13 @@ const App: React.FC = () => {
                   <Search className="w-5 h-5 absolute left-6 top-1/2 -translate-y-1/2 text-slate-300" />
                   <input type="text" placeholder="Filter roster directory..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-16 pr-8 py-5 bg-slate-50 border-none rounded-[1.5rem] text-sm font-semibold focus:ring-2 focus:ring-slate-100 outline-none shadow-inner" />
                 </div>
-                <button onClick={() => setIsBulkAdding(true)} className="px-8 py-5 bg-slate-50 rounded-2xl text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-slate-800 transition-all flex items-center space-x-2 border border-slate-100"><Upload className="w-4 h-4" /><span>Sync Data</span></button>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm border-collapse">
                   <thead className="bg-slate-50/50 border-b border-slate-100">
                     <tr>
                       <th className="px-8 py-6 w-16"><button onClick={() => { if (selectedIds.size === filteredStudents.length && filteredStudents.length > 0) setSelectedIds(new Set()); else setSelectedIds(new Set(filteredStudents.map(s => s.id))); }} className="p-1 hover:bg-white rounded-lg transition-colors">{selectedIds.size === filteredStudents.length && filteredStudents.length > 0 ? <CheckSquare className="w-4.5 h-4.5 text-indigo-600" /> : <Square className="w-4.5 h-4.5 text-slate-300" />}</button></th>
-                      <th className="px-4 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center w-12">#</th>
+                      <th className="px-4 py-6 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest w-12">#</th>
                       <th className="px-8 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest sticky left-0 bg-slate-50"><button onClick={() => { if(sortKey === 'name') setSortDir(sortDir === 'asc' ? 'desc' : 'asc'); else { setSortKey('name'); setSortDir('asc'); } }} className="flex items-center gap-2 hover:text-slate-800 transition-colors">Student <ArrowUpDown className="w-3 h-3" /></button></th>
                       <th className="px-8 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest"><button onClick={() => { if(sortKey === 'dob') setSortDir(sortDir === 'asc' ? 'desc' : 'asc'); else { setSortKey('dob'); setSortDir('asc'); } }} className="flex items-center gap-2 hover:text-slate-800 transition-colors">DOB <ArrowUpDown className="w-3 h-3" /></button></th>
                       <th className="px-8 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest"><button onClick={() => { if(sortKey === 'class') setSortDir(sortDir === 'asc' ? 'desc' : 'asc'); else { setSortKey('class'); setSortDir('asc'); } }} className="flex items-center gap-2 hover:text-slate-800 transition-colors">Current Class <ArrowUpDown className="w-3 h-3" /></button></th>
@@ -616,11 +636,11 @@ const App: React.FC = () => {
                   </thead>
                   <tbody className="divide-y divide-slate-50">
                     {filteredStudents.map((s, idx) => {
-                      const nameColor = getStudentNameColor(s);
                       const isExpanded = expandedStudentId === s.id;
                       const isHighlighted = highlightedStudentId === s.id;
                       const currentClass = getEffectiveClass(s, projectionDate, classSettings, manualAssignments, manualTransitionDates);
                       const isSelected = selectedIds.has(s.id);
+                      const hasSafetyIssues = s.allergies.length > 0 || s.medications.length > 0;
                       return (
                         <React.Fragment key={s.id}>
                           <tr onMouseEnter={() => setHighlightedStudentId(s.id)} onMouseLeave={() => setHighlightedStudentId(null)} className={`hover:bg-slate-50 transition-all group ${isExpanded ? 'bg-slate-50 shadow-inner' : ''} ${isSelected ? 'bg-indigo-50/30' : ''}`}>
@@ -629,13 +649,13 @@ const App: React.FC = () => {
                             <td className="px-8 py-6 sticky left-0 bg-white group-hover:bg-slate-50 z-10 min-w-[240px] relative">
                               <div className="flex items-center space-x-4">
                                 <button onClick={() => setExpandedStudentId(isExpanded ? null : s.id)} className="p-1.5 hover:bg-slate-100 rounded-xl transition-all">{isExpanded ? <ChevronUp className="w-4.5 h-4.5 text-slate-400" /> : <ChevronDown className="w-4.5 h-4.5 text-slate-400" />}</button>
-                                <span className="font-bold cursor-help transition-colors text-[13px]" style={{ color: nameColor }}>{s.name}</span>
+                                <span className="font-bold cursor-help transition-colors text-[13px] text-slate-800">{s.name}</span>
                                 {s.isStaffChild && <ShieldCheck className="w-4 h-4" style={{ color: COLORS.staffPurple }} />}
-                                {(s.allergies.length > 0 || s.medications.length > 0) && <AlertCircle className="w-4 h-4 text-rose-500" />}
+                                {hasSafetyIssues && <AlertTriangle className="w-4 h-4 text-rose-500" />}
                                 {isHighlighted && <RelationshipHoverDetails studentId={s.id} />}
                               </div>
                             </td>
-                            <td className="px-8 py-6 text-xs font-bold text-slate-500">{new Date(s.dob).toLocaleDateString()}</td>
+                            <td className="px-8 py-6 text-xs font-bold text-slate-500">{s.dob}</td>
                             <td className="px-8 py-6 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{currentClass}</td>
                             <td className="px-8 py-6 text-center font-bold text-slate-600">{s.fte.toFixed(1)}</td>
                             <td className="px-8 py-6 text-right"><button onClick={() => { if(window.confirm('Remove record?')) { setStudents(prev => prev.filter(st => st.id !== s.id)); showConfirmation("Record removed"); } }} className="p-2.5 text-slate-200 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition-all"><Trash2 className="w-4.5 h-4.5" /></button></td>
@@ -645,8 +665,9 @@ const App: React.FC = () => {
                               <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
                                 <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><ClipboardList className="w-4 h-4" /><span>Administrative</span></h5>
                                 <div className="space-y-4">
+                                  <button onClick={() => setIsEditingStudent(s)} className="w-full py-3.5 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-bold uppercase flex items-center justify-center space-x-3 border border-slate-100 transition-all shadow-sm"><UserCog className="w-4 h-4" /><span>Edit Identity</span></button>
                                   <label className="flex items-center justify-between p-3.5 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-colors"><span className="text-[10px] font-bold text-slate-500 uppercase">Staff Child</span><input type="checkbox" checked={s.isStaffChild} onChange={e => handleUpdateStudent(s.id, { isStaffChild: e.target.checked })} className="w-5 h-5 rounded-lg text-indigo-600" /></label>
-                                  <button onClick={() => setRelModalData({ sourceId: s.id, search: '', type: 'S' })} className="w-full py-3.5 bg-slate-50 hover:bg-indigo-50 text-indigo-600 rounded-2xl text-[10px] font-bold uppercase flex items-center justify-center space-x-3 border border-slate-100 transition-all shadow-sm"><UserPlus className="w-4 h-4" /><span>Link Connections</span></button>
+                                  <button onClick={() => setRelModalData({ sourceId: s.id, search: '', type: 'S' })} className="w-full py-3.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-2xl text-[10px] font-bold uppercase flex items-center justify-center space-x-3 border border-indigo-100 transition-all shadow-sm"><UserPlus className="w-4 h-4" /><span>Link Connections</span></button>
                                 </div>
                               </div>
                               <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
@@ -660,9 +681,9 @@ const App: React.FC = () => {
                                 <button onClick={() => setMedEntry({ studentId: s.id, name: '', frequency: '', expiration: '' })} className="w-full py-3 bg-indigo-50/50 text-indigo-600 rounded-2xl text-[10px] font-bold uppercase border-2 border-dashed border-indigo-100 flex items-center justify-center space-x-3 transition-all hover:bg-indigo-50"><PlusCircle className="w-4 h-4" /><span>Add Medication</span></button></div>
                               </div>
                               <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
-                                <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><FileText className="w-4 h-4" /><span>Records</span></h5>
+                                <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><FileText className="w-4 h-4" /><span>Documentation</span></h5>
                                 <div className="p-5 bg-slate-50 rounded-2xl space-y-5 border border-slate-100 shadow-inner">
-                                  <div className="flex items-center justify-between"><span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Medical Form</span><input type="file" className="hidden" id={`upload-${s.id}`} onChange={e => handleUpdateStudent(s.id, { medicalFormUrl: '#' })} /><label htmlFor={`upload-${s.id}`} className="p-2 bg-white border border-slate-200 rounded-xl cursor-pointer hover:shadow-md transition-all shadow-sm"><Upload className="w-3.5 h-3.5 text-slate-600" /></label></div>
+                                  <div className="flex items-center justify-between"><span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Enrollment Form</span><input type="file" className="hidden" id={`upload-${s.id}`} onChange={e => handleUpdateStudent(s.id, { medicalFormUrl: '#' })} /><label htmlFor={`upload-${s.id}`} className="p-2 bg-white border border-slate-200 rounded-xl cursor-pointer hover:shadow-md transition-all shadow-sm"><Upload className="w-3.5 h-3.5 text-slate-600" /></label></div>
                                   <label className="block space-y-2"><span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block ml-1">Expiration</span><input type="text" placeholder="MM/DD/YYYY" value={s.documentExpirationDate || ''} onChange={e => handleUpdateStudent(s.id, { documentExpirationDate: autoFormatDate(e.target.value) })} className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-[11px] font-bold outline-none shadow-sm" /></label>
                                 </div>
                               </div>
@@ -678,7 +699,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Similar updates for Medical/Settings tabs ensuring Date input consistency */}
         {activeTab === Tab.MEDICAL && (
           <div className="space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -737,7 +757,7 @@ const App: React.FC = () => {
                     {students.filter(s => (s.allergies.length > 0 || s.medications.length > 0 || s.medicalFormUrl) && s.name.toLowerCase().includes(searchTerm.toLowerCase())).map((s) => (
                       <tr key={s.id} className="hover:bg-slate-50 transition-all group">
                         <td className="px-10 py-8 sticky left-0 bg-white group-hover:bg-slate-50 min-w-[220px]">
-                          <span className="font-bold text-slate-800 text-[14px]" style={{ color: getStudentNameColor(s) }}>{s.name}</span>
+                          <span className="font-bold text-slate-800 text-[14px]">{s.name}</span>
                           <p className="text-[9px] font-bold text-slate-400 uppercase mt-0.5">{getEffectiveClass(s, projectionDate, classSettings, manualAssignments, manualTransitionDates)}</p>
                         </td>
                         <td className="px-10 py-8 space-y-3">{s.allergies.map(a => (<div key={a.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100 shadow-sm"><p className="text-[11px] font-bold text-slate-700">{a.substance}</p><p className={`text-[8px] font-bold uppercase tracking-widest ${a.severity === 'Severe' ? 'text-rose-500' : 'text-slate-400'}`}>{a.severity} Severity</p></div>))}</td>
@@ -761,10 +781,36 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Settings Tab updates omitted for brevity but they follow MM/DD/YYYY mask */}
+        {activeTab === Tab.SETTINGS && (
+          <div className="animate-in fade-in slide-in-from-bottom-8 duration-700 space-y-10 max-w-5xl mx-auto">
+            <div className="bg-white p-16 rounded-[4rem] shadow-sm border border-slate-100">
+              <h3 className="text-3xl font-bold text-slate-800 mb-12 flex items-center space-x-5"><SettingsIcon className="w-10 h-10" style={{ color: COLORS.brandGreen }} /><span>Configuration</span></h3>
+              <div className="space-y-5">
+                {classSettings.map((cls, idx) => (
+                  <div key={cls.name} className={`px-12 py-6 rounded-3xl border-2 transition-all duration-300 ${cls.hidden ? 'bg-slate-50 border-slate-50 opacity-40' : 'bg-white border-slate-100 hover:border-slate-300 shadow-sm'}`}>
+                    <div className="grid grid-cols-[1fr_140px_140px] gap-10 items-center">
+                      <div className="flex items-center space-x-6">
+                        <button onClick={() => setClassSettings(prev => prev.map((c, i) => i === idx ? { ...c, hidden: !c.hidden } : c))} className="p-3 rounded-2xl transition-all bg-slate-50 text-slate-400 hover:text-slate-800 shadow-inner">{cls.hidden ? <EyeOff className="w-6 h-6" /> : <Eye className="w-6 h-6" />}</button>
+                        <p className="font-black text-slate-800 text-[18px] tracking-tight">{cls.name}</p>
+                      </div>
+                      <div className="flex flex-col items-center">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">Max Capacity</span>
+                        <input type="number" value={cls.capacity} onChange={(e) => setClassSettings(prev => prev.map((c, i) => i === idx ? { ...c, capacity: parseInt(e.target.value) || 0 } : c))} className="w-20 p-3 bg-slate-50 border-none rounded-2xl text-sm font-bold text-center shadow-inner" />
+                      </div>
+                      <div className="flex flex-col items-center">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">Groups</span>
+                        <input type="number" min="1" value={cls.subdivisionCount || 1} onChange={(e) => setClassSettings(prev => prev.map((c, i) => i === idx ? { ...c, subdivisionCount: parseInt(e.target.value) || 1 } : c))} className="w-20 p-3 bg-slate-50 border-none rounded-2xl text-sm font-bold text-center shadow-inner" />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </main>
 
-      {/* Modals ensuring MM/DD/YYYY mask */}
+      {/* Enrollment Modal */}
       {isAddingStudent && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
           <div className="bg-white w-full max-w-sm rounded-[3.5rem] shadow-2xl p-12 animate-in zoom-in-95 duration-300">
@@ -778,10 +824,56 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {relModalData && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8"><div className="bg-white w-full max-w-md rounded-[3rem] shadow-2xl p-12 flex flex-col max-h-[85vh] animate-in zoom-in-95 overflow-hidden"><div className="flex justify-between items-center mb-8"><h3 className="text-2xl font-bold text-slate-800">Establish Link</h3><button onClick={() => setRelModalData(null)} className="p-3 hover:bg-slate-100 rounded-full transition-all"><X className="w-8 h-8 text-slate-400" /></button></div><div className="flex space-x-4 mb-8"><button onClick={() => setRelModalData({...relModalData, type: 'S'})} className={`flex-1 py-4 rounded-2xl text-[10px] font-bold uppercase tracking-[0.2em] border-2 transition-all ${relModalData.type === 'S' ? 'bg-indigo-50 border-indigo-200 text-indigo-600 shadow-md' : 'bg-slate-50 border-slate-50 text-slate-300'}`}>Sibling</button><button onClick={() => setRelModalData({...relModalData, type: 'F'})} className={`flex-1 py-4 rounded-2xl text-[10px] font-bold uppercase tracking-[0.2em] border-2 transition-all ${relModalData.type === 'F' ? 'bg-indigo-50 border-indigo-200 text-indigo-600 shadow-md' : 'bg-slate-50 border-slate-50 text-slate-300'}`}>Friend</button></div><div className="relative mb-8"><Search className="w-6 h-6 absolute left-6 top-1/2 -translate-y-1/2 text-slate-300" /><input type="text" placeholder="Filter roster..." value={relModalData.search} onChange={(e) => setRelModalData({...relModalData, search: e.target.value})} className="w-full pl-16 pr-8 py-5 bg-slate-50 border-none rounded-2xl text-sm font-bold outline-none shadow-inner" /></div><div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">{students.filter(s => s.id !== relModalData.sourceId && s.name.toLowerCase().includes(relModalData.search.toLowerCase())).map(s => (<button key={s.id} onClick={() => { handleAddRelationship(relModalData.sourceId, s.id, relModalData.type); setRelModalData(null); }} className="w-full flex items-center justify-between p-5 hover:bg-indigo-50/50 rounded-2xl transition-all border border-transparent hover:border-indigo-100 text-left group"><p className="text-[14px] font-bold text-slate-800 group-hover:text-indigo-600 transition-colors" style={{ color: getStudentNameColor(s) }}>{s.name}</p></button>))}</div></div></div>
+      {/* Editing Modal */}
+      {isEditingStudent && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
+          <div className="bg-white w-full max-w-sm rounded-[3.5rem] shadow-2xl p-12 animate-in zoom-in-95 duration-300">
+            <h2 className="text-3xl font-bold mb-10 text-slate-800 text-center tracking-tight">Edit Identity</h2>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              setStudents(prev => prev.map(s => s.id === isEditingStudent.id ? isEditingStudent : s));
+              setIsEditingStudent(null);
+              showConfirmation("Student updated successfully");
+            }} className="space-y-8">
+              <label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block ml-1">Legal Name</span><input autoFocus type="text" required value={isEditingStudent.name} onChange={(e) => setIsEditingStudent({...isEditingStudent, name: e.target.value})} className="w-full px-6 py-5 bg-slate-50 border-none rounded-2xl text-[18px] font-bold text-slate-800 shadow-inner" /></label>
+              <label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block ml-1">Birth Date (MM/DD/YYYY)</span><input type="text" placeholder="MM/DD/YYYY" required value={isEditingStudent.dob} onChange={(e) => setIsEditingStudent({...isEditingStudent, dob: autoFormatDate(e.target.value)})} className="w-full px-6 py-5 bg-slate-50 border-none rounded-2xl text-base font-bold text-slate-800 shadow-inner" /></label>
+              <div className="flex space-x-5 pt-4"><button type="button" onClick={() => setIsEditingStudent(null)} className="flex-1 py-5 bg-slate-100 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-400">Cancel</button><button type="submit" className="flex-1 py-5 text-white rounded-2xl text-[11px] font-bold uppercase tracking-widest bg-slate-800 shadow-2xl hover:bg-slate-900">Update</button></div>
+            </form>
+          </div>
+        </div>
       )}
 
+      {/* Bulk Sync Modal */}
+      {isBulkAdding && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
+          <div className="bg-white w-full max-w-2xl rounded-[3.5rem] shadow-2xl p-14 animate-in slide-in-from-top-12 duration-500">
+            <h2 className="text-3xl font-bold mb-8 text-slate-800 tracking-tight">Bulk Registry Upload</h2>
+            <p className="text-slate-400 text-[10px] mb-4 font-bold uppercase tracking-widest">Supports Excel (Copy/Paste), Tabs, or Comma separated values.</p>
+            <textarea rows={12} placeholder="John Doe	01/01/2020&#10;Jane Smith, 05/15/2019" value={bulkInput} onChange={(e) => setBulkInput(e.target.value)} className="w-full px-8 py-7 bg-slate-50 border-none rounded-[2rem] outline-none font-mono text-sm shadow-inner focus:ring-4 focus:ring-slate-100" />
+            <div className="flex space-x-5 mt-10"><button onClick={() => setIsBulkAdding(false)} className="flex-1 py-5 bg-slate-100 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-400">Cancel</button><button onClick={handleBulkAdd} className="flex-1 py-5 text-white rounded-2xl text-[11px] font-bold uppercase tracking-widest bg-slate-800 shadow-2xl">Upload Data</button></div>
+          </div>
+        </div>
+      )}
+
+      {/* Relationship Modal */}
+      {relModalData && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
+          <div className="bg-white w-full max-w-md rounded-[3rem] shadow-2xl p-12 flex flex-col max-h-[85vh] animate-in zoom-in-95 overflow-hidden">
+            <div className="flex justify-between items-center mb-8"><h3 className="text-2xl font-bold text-slate-800">Establish Link</h3><button onClick={() => setRelModalData(null)} className="p-3 hover:bg-slate-100 rounded-full transition-all"><X className="w-8 h-8 text-slate-400" /></button></div>
+            <div className="flex space-x-4 mb-8"><button onClick={() => setRelModalData({...relModalData, type: 'S'})} className={`flex-1 py-4 rounded-2xl text-[10px] font-bold uppercase tracking-[0.2em] border-2 transition-all ${relModalData.type === 'S' ? 'bg-indigo-50 border-indigo-200 text-indigo-600 shadow-md' : 'bg-slate-50 border-slate-50 text-slate-300'}`}>Sibling</button><button onClick={() => setRelModalData({...relModalData, type: 'F'})} className={`flex-1 py-4 rounded-2xl text-[10px] font-bold uppercase tracking-[0.2em] border-2 transition-all ${relModalData.type === 'F' ? 'bg-indigo-50 border-indigo-200 text-indigo-600 shadow-md' : 'bg-slate-50 border-slate-50 text-slate-300'}`}>Friend</button></div>
+            <div className="relative mb-8"><Search className="w-6 h-6 absolute left-6 top-1/2 -translate-y-1/2 text-slate-300" /><input type="text" placeholder="Filter roster..." value={relModalData.search} onChange={(e) => setRelModalData({...relModalData, search: e.target.value})} className="w-full pl-16 pr-8 py-5 bg-slate-50 border-none rounded-2xl text-sm font-bold outline-none shadow-inner" /></div>
+            <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
+              {students.filter(s => s.id !== relModalData.sourceId && s.name.toLowerCase().includes(relModalData.search.toLowerCase())).map(s => (
+                <button key={s.id} onClick={() => { handleAddRelationship(relModalData.sourceId, s.id, relModalData.type); setRelModalData(null); }} className="w-full flex items-center justify-between p-5 hover:bg-indigo-50/50 rounded-2xl transition-all border border-transparent hover:border-indigo-100 text-left group">
+                  <p className="text-[14px] font-bold text-slate-800 group-hover:text-indigo-600 transition-colors">{s.name}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Safety Protocol Modals */}
       {allergyEntry && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8 animate-in fade-in duration-300"><div className="bg-white w-full max-w-lg rounded-[3rem] shadow-2xl p-12 flex flex-col animate-in zoom-in-95"><h3 className="text-2xl font-bold text-slate-800 mb-8 tracking-tight">{allergyEntry.id ? 'Edit Allergy' : 'New Safety Protocol'}</h3><div className="space-y-6"><label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Substance</span><input type="text" autoFocus value={allergyEntry.substance} onChange={e => setAllergyEntry({...allergyEntry, substance: e.target.value})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold shadow-inner focus:ring-2 focus:ring-rose-100 transition-all" /></label><div className="grid grid-cols-3 gap-4">{(['Mild', 'Moderate', 'Severe'] as Allergy['severity'][]).map(sev => (<button key={sev} onClick={() => setAllergyEntry({...allergyEntry, severity: sev})} className={`py-4 rounded-2xl text-[10px] font-bold uppercase tracking-widest transition-all border-2 ${allergyEntry.severity === sev ? 'bg-rose-50 border-rose-200 text-rose-600 shadow-md scale-105' : 'bg-slate-50 border-slate-50 text-slate-400'}`}>{sev}</button>))}</div><label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Last Reacted (MM/DD/YYYY)</span><input type="text" placeholder="MM/DD/YYYY" value={allergyEntry.lastReaction} onChange={e => setAllergyEntry({...allergyEntry, lastReaction: autoFormatDate(e.target.value)})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold shadow-inner" /></label></div><div className="flex space-x-5 mt-12"><button onClick={() => setAllergyEntry(null)} className="flex-1 py-5 bg-slate-100 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-500">Cancel</button><button onClick={() => { if (!allergyEntry.substance) return; const student = students.find(s => s.id === allergyEntry.studentId); if (student) { const newAllergies = allergyEntry.id ? student.allergies.map(a => a.id === allergyEntry.id ? { ...allergyEntry, id: a.id } as Allergy : a) : [...student.allergies, { ...allergyEntry, id: crypto.randomUUID() } as Allergy]; handleUpdateStudent(student.id, { allergies: newAllergies }); showConfirmation("Allergy entry saved"); } setAllergyEntry(null); }} className="flex-1 py-5 text-white rounded-2xl text-[11px] font-bold uppercase bg-rose-600 shadow-xl hover:bg-rose-700 transform hover:scale-105">Save Alert</button></div></div></div>
       )}
