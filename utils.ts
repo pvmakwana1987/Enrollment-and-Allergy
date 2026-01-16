@@ -4,8 +4,18 @@ import { DEFAULT_ACADEMIC_CUTOFF_MONTH, DEFAULT_ACADEMIC_CUTOFF_DAY } from './co
 
 export const parseDate = (dateStr: string) => {
   if (!dateStr) return null;
-  const [year, month, day] = dateStr.split('-').map(Number);
-  return new Date(year, month - 1, day);
+  // Standard format YYYY-MM-DD
+  if (dateStr.includes('-')) {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    return new Date(year, month - 1, day);
+  }
+  // Standard format MM/DD/YYYY
+  if (dateStr.includes('/')) {
+    const [month, day, year] = dateStr.split('/').map(Number);
+    const fullYear = year < 100 ? 2000 + year : year;
+    return new Date(fullYear, month - 1, day);
+  }
+  return null;
 };
 
 export const dateDiffInMonths = (d1: Date, d2: Date) => {
@@ -61,23 +71,15 @@ export const getProjectedTransitionDate = (student: Student, currentClassName: s
   return academicCutoff.toISOString().split('T')[0];
 };
 
-/**
- * Calculates student's age relative to the academic cutoff of the relevant school year.
- * If projection date is May 2025, placement is based on age as of Aug 31, 2024.
- */
 export const getAgeAtAcademicCutoff = (dob: string, projectionDate: string) => {
   const dobDate = parseDate(dob);
   const projDate = parseDate(projectionDate);
   if (!dobDate || !projDate) return 0;
 
-  // The academic year starting date (e.g., Aug 31 of projection year)
   const cutoffOfProjYear = new Date(projDate.getFullYear(), DEFAULT_ACADEMIC_CUTOFF_MONTH - 1, DEFAULT_ACADEMIC_CUTOFF_DAY);
   
-  // Placement for the CURRENT cycle
   let targetCutoff = cutoffOfProjYear;
   if (projDate < cutoffOfProjYear) {
-    // We are in the spring/summer before the cutoff of the current calendar year, 
-    // meaning the child's grade is determined by the previous year's cutoff.
     targetCutoff = new Date(projDate.getFullYear() - 1, DEFAULT_ACADEMIC_CUTOFF_MONTH - 1, DEFAULT_ACADEMIC_CUTOFF_DAY);
   }
 
@@ -94,7 +96,6 @@ export const getAutomaticClass = (student: Student, projectionDate: string, clas
 
   const activeClasses = classes.filter(c => !c.hidden && !c.isSpecial).sort((a, b) => a.order - b.order);
 
-  // 1. HIGHEST PRIORITY: Academic Grading (Preschool, PreK, TK)
   if (ageAtCutoff >= 5) return "Graduated/Withdrawn";
   
   if (ageAtCutoff >= 4) {
@@ -107,7 +108,6 @@ export const getAutomaticClass = (student: Student, projectionDate: string, clas
     if (preschool) return preschool.name;
   }
 
-  // 2. SECONDARY PRIORITY: Age-range month based classes (Infant -> Early PS)
   for (const cls of activeClasses) {
     if (cls.minAge !== undefined && cls.maxAge !== undefined) {
       if (ageInMonths >= cls.minAge && ageInMonths < cls.maxAge) {
@@ -116,7 +116,6 @@ export const getAutomaticClass = (student: Student, projectionDate: string, clas
     }
   }
 
-  // Fallback for those over 24m but under 3y academic age
   if (ageInMonths >= 24) {
     const earlyPS = activeClasses.find(c => c.name.toLowerCase().includes("early preschool"));
     if (earlyPS) return earlyPS.name;
@@ -132,8 +131,12 @@ export const getEffectiveClass = (
   manualAssignments: Record<string, string>,
   manualTransitionDates: Record<string, string>
 ): string => {
-  if (student.withdrawalDate && parseDate(student.withdrawalDate)! <= parseDate(projectionDate)!) {
-    return "Graduated/Withdrawn";
+  const projDate = parseDate(projectionDate);
+  if (!projDate) return "Graduated/Withdrawn";
+
+  if (student.withdrawalDate) {
+    const wDate = parseDate(student.withdrawalDate);
+    if (wDate && wDate <= projDate) return "Graduated/Withdrawn";
   }
 
   if (manualAssignments[student.id]) {
@@ -141,13 +144,16 @@ export const getEffectiveClass = (
     if (assigned && !assigned.hidden) return assigned.name;
   }
 
-  const manualDate = manualTransitionDates[student.id];
-  if (manualDate && parseDate(projectionDate)! >= parseDate(manualDate)!) {
-    const auto = getAutomaticClass(student, manualDate, classes);
-    const sorted = [...classes].filter(c => !c.isSpecial && !c.hidden).sort((a,b) => a.order - b.order);
-    const idx = sorted.findIndex(c => c.name === auto);
-    if (idx !== -1 && idx < sorted.length - 1) return sorted[idx + 1].name;
-    return "Graduated/Withdrawn";
+  const manualDateStr = manualTransitionDates[student.id];
+  if (manualDateStr) {
+    const mDate = parseDate(manualDateStr);
+    if (mDate && projDate >= mDate) {
+      const auto = getAutomaticClass(student, manualDateStr, classes);
+      const sorted = [...classes].filter(c => !c.isSpecial && !c.hidden).sort((a,b) => a.order - b.order);
+      const idx = sorted.findIndex(c => c.name === auto);
+      if (idx !== -1 && idx < sorted.length - 1) return sorted[idx + 1].name;
+      return "Graduated/Withdrawn";
+    }
   }
 
   return getAutomaticClass(student, projectionDate, classes);
