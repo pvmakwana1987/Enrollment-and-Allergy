@@ -1,90 +1,43 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Users, 
-  LayoutDashboard, 
-  Settings as SettingsIcon, 
-  Plus, 
-  Search, 
-  Calendar,
-  Upload,
-  Trash2,
-  Clock,
-  UserCheck,
-  GraduationCap,
-  X,
-  Heart,
-  Smile,
-  ShieldCheck,
-  UserPlus,
-  Eye,
-  EyeOff,
-  GripVertical,
-  Stethoscope,
-  Pill,
-  ChevronDown,
-  ChevronUp,
-  PlusCircle,
-  AlertCircle,
-  ClipboardList,
-  Edit2,
-  FileText,
-  Minimize2,
-  Maximize2,
-  Bell,
-  CheckSquare,
-  Square,
-  ArrowUpDown,
-  AlertTriangle,
-  Settings2,
-  Sparkles,
-  CheckCircle2,
-  UserCog
+  Users, LayoutDashboard, Settings as SettingsIcon, Plus, Search, Calendar, Upload, Trash2, Clock, 
+  UserCheck, GraduationCap, X, Heart, Smile, ShieldCheck, UserPlus, Eye, EyeOff, GripVertical, 
+  Stethoscope, Pill, ChevronDown, ChevronUp, PlusCircle, AlertCircle, ClipboardList, Edit2, 
+  FileText, Minimize2, Maximize2, Bell, CheckSquare, Square, ArrowUpDown, AlertTriangle, 
+  Settings2, Sparkles, CheckCircle2, UserCog
 } from 'lucide-react';
+import { db } from './firebase';
 import { 
-  Student, 
-  ClassConfig, 
-  Tab,
-  Medication,
-  Allergy
+  collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, writeBatch, query, 
+  orderBy, addDoc, getDoc, serverTimestamp 
+} from 'firebase/firestore';
+import { 
+  Student, ClassConfig, Tab, Medication, Allergy 
 } from './types';
 import { 
-  DEFAULT_CLASSES, 
-  COLORS
+  DEFAULT_CLASSES, COLORS 
 } from './constants';
 import { 
-  getEffectiveClass, 
-  formatDetailedAge,
-  getProjectedTransitionDate,
-  parseDate,
-  standardizeDateDisplay
+  getEffectiveClass, formatDetailedAge, getProjectedTransitionDate, parseDate, standardizeDateDisplay 
 } from './utils';
 import { ClassBarChart } from './components/ClassBarChart';
 import { getEnrollmentInsights } from './services/gemini';
 
 enum RosterFilter {
-  ALL = 'all',
-  ACTIVE = 'active',
-  WAITLISTED = 'waitlisted',
-  GRADUATED = 'graduated'
+  ALL = 'all', ACTIVE = 'active', WAITLISTED = 'waitlisted', GRADUATED = 'graduated'
 }
 
 type SortKey = 'name' | 'dob' | 'class';
 type SortDirection = 'asc' | 'desc';
 
 interface ExpiringItem {
-  studentName: string;
-  studentId: string;
-  itemName: string;
-  type: 'Medication' | 'Form';
-  daysLeft: number;
-  date: string;
+  studentName: string; studentId: string; itemName: string; type: 'Medication' | 'Form'; 
+  daysLeft: number; date: string;
 }
 
 interface RosterDisplaySettings {
-  showDob: boolean;
-  showAge: boolean;
-  showTransition: boolean;
+  showDob: boolean; showAge: boolean; showTransition: boolean;
 }
 
 const PrimroseLogo = () => (
@@ -107,26 +60,9 @@ const PrimroseLogo = () => (
 
 const autoFormatDate = (input: string): string => {
   const digits = input.replace(/\D/g, '').substring(0, 8);
-  if (digits.length > 4) {
-    return `${digits.substring(0, 2)}/${digits.substring(2, 4)}/${digits.substring(4)}`;
-  } else if (digits.length > 2) {
-    return `${digits.substring(0, 2)}/${digits.substring(2)}`;
-  }
+  if (digits.length > 4) return `${digits.substring(0, 2)}/${digits.substring(2, 4)}/${digits.substring(4)}`;
+  else if (digits.length > 2) return `${digits.substring(0, 2)}/${digits.substring(2)}`;
   return digits;
-};
-
-const flexibleParseDate = (dateStr: string): Date | null => {
-  return parseDate(dateStr);
-};
-
-const isExpiringSoon = (dateStr: string | undefined, days: number) => {
-  if (!dateStr) return false;
-  const expDate = flexibleParseDate(dateStr);
-  if (!expDate || isNaN(expDate.getTime())) return false;
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  const diffDays = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-  return diffDays >= 0 && diffDays <= days;
 };
 
 const App: React.FC = () => {
@@ -135,21 +71,16 @@ const App: React.FC = () => {
   const [projectionDate, setProjectionDate] = useState<string>(new Date().toLocaleDateString('en-US'));
   const [students, setStudents] = useState<Student[]>([]);
   const [classSettings, setClassSettings] = useState<ClassConfig[]>(DEFAULT_CLASSES);
-  const [manualAssignments, setManualAssignments] = useState<Record<string, string>>({});
-  const [waitlistedAssignments, setWaitlistedAssignments] = useState<Record<string, string>>({});
-  const [manualTransitionDates, setManualTransitionDates] = useState<Record<string, string>>({});
+  const [classDisplaySettings, setClassDisplaySettings] = useState<Record<string, RosterDisplaySettings>>({});
   
   const [isChartMinimized, setIsChartMinimized] = useState(false);
-  const [classDisplaySettings, setClassDisplaySettings] = useState<Record<string, RosterDisplaySettings>>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDirection>('asc');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-
-  // Feedback System
   const [toast, setToast] = useState<string | null>(null);
 
-  // Modals
+  // Modals & States
   const [isAddingStudent, setIsAddingStudent] = useState(false);
   const [isEditingStudent, setIsEditingStudent] = useState<Student | null>(null);
   const [isBulkAdding, setIsBulkAdding] = useState(false);
@@ -161,28 +92,43 @@ const App: React.FC = () => {
   const [allergyEntry, setAllergyEntry] = useState<{ studentId: string; id?: string; substance: string; severity: Allergy['severity']; lastReaction: string; comments: string } | null>(null);
   const [medEntry, setMedEntry] = useState<{ studentId: string; id?: string; name: string; frequency: string; expiration: string } | null>(null);
   const [openSettingsClass, setOpenSettingsClass] = useState<string | null>(null);
-
   const [insights, setInsights] = useState<string | null>(null);
   const [loadingInsights, setLoadingInsights] = useState(false);
 
+  // Firestore Sync: Students
   useEffect(() => {
-    const saved = localStorage.getItem('primrose_v14');
-    if (saved) {
-      const data = JSON.parse(saved);
-      setStudents(data.students || []);
-      setClassSettings(data.classSettings || DEFAULT_CLASSES);
-      setManualAssignments(data.manualAssignments || {});
-      setWaitlistedAssignments(data.waitlistedAssignments || {});
-      setManualTransitionDates(data.manualTransitionDates || {});
-      setClassDisplaySettings(data.classDisplaySettings || {});
-      if (data.projectionDate) setProjectionDate(data.projectionDate);
+    try {
+      const q = query(collection(db, "students"), orderBy("name", "asc"));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const studentData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Student));
+        setStudents(studentData);
+      }, (error) => {
+        console.error("Firestore Students Error:", error);
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.error("Setup Students Listener Error:", e);
     }
   }, []);
 
+  // Firestore Sync: Settings
   useEffect(() => {
-    const data = { students, classSettings, manualAssignments, waitlistedAssignments, manualTransitionDates, projectionDate, classDisplaySettings };
-    localStorage.setItem('primrose_v14', JSON.stringify(data));
-  }, [students, classSettings, manualAssignments, waitlistedAssignments, manualTransitionDates, projectionDate, classDisplaySettings]);
+    try {
+      const unsubscribe = onSnapshot(doc(db, "settings", "global"), (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.classSettings) setClassSettings(data.classSettings);
+          if (data.projectionDate) setProjectionDate(data.projectionDate);
+          if (data.classDisplaySettings) setClassDisplaySettings(data.classDisplaySettings);
+        }
+      }, (error) => {
+        console.error("Firestore Settings Error:", error);
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.error("Setup Settings Listener Error:", e);
+    }
+  }, []);
 
   useEffect(() => {
     if (toast) {
@@ -193,6 +139,36 @@ const App: React.FC = () => {
 
   const showConfirmation = (msg: string) => setToast(msg);
 
+  const saveGlobalSettings = async (updates: any) => {
+    try {
+      await setDoc(doc(db, "settings", "global"), updates, { merge: true });
+    } catch (e) {
+      console.error("Save Settings Error:", e);
+      showConfirmation("Error: Connection Failed");
+    }
+  };
+
+  const manualAssignments = useMemo(() => {
+    return students.reduce((acc, s) => {
+      if ((s as any).manualClass) acc[s.id] = (s as any).manualClass;
+      return acc;
+    }, {} as Record<string, string>);
+  }, [students]);
+
+  const waitlistedAssignments = useMemo(() => {
+    return students.reduce((acc, s) => {
+      if ((s as any).isWaitlisted) acc[s.id] = (s as any).isWaitlisted;
+      return acc;
+    }, {} as Record<string, boolean>);
+  }, [students]);
+
+  const manualTransitionDates = useMemo(() => {
+    return students.reduce((acc, s) => {
+      if ((s as any).manualTransitionDate) acc[s.id] = (s as any).manualTransitionDate;
+      return acc;
+    }, {} as Record<string, string>);
+  }, [students]);
+
   const expirationGroups = useMemo(() => {
     const urgent: ExpiringItem[] = [];
     const upcoming: ExpiringItem[] = [];
@@ -201,8 +177,8 @@ const App: React.FC = () => {
 
     students.forEach(s => {
       s.medications.forEach(m => {
-        const expDate = flexibleParseDate(m.expirationDate);
-        if (expDate && !isNaN(expDate.getTime())) {
+        const expDate = parseDate(m.expirationDate);
+        if (expDate) {
           const diffDays = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
           const item = { studentName: s.name, studentId: s.id, itemName: m.name, type: 'Medication' as const, daysLeft: diffDays, date: m.expirationDate };
           if (diffDays >= 0 && diffDays <= 7) urgent.push(item);
@@ -210,8 +186,8 @@ const App: React.FC = () => {
         }
       });
       if (s.documentExpirationDate) {
-        const expDate = flexibleParseDate(s.documentExpirationDate);
-        if (expDate && !isNaN(expDate.getTime())) {
+        const expDate = parseDate(s.documentExpirationDate);
+        if (expDate) {
           const diffDays = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
           const item = { studentName: s.name, studentId: s.id, itemName: 'Medical Form', type: 'Form' as const, daysLeft: diffDays, date: s.documentExpirationDate };
           if (diffDays >= 0 && diffDays <= 7) urgent.push(item);
@@ -270,82 +246,121 @@ const App: React.FC = () => {
     return result;
   }, [students, searchTerm, rosterFilter, projectionDate, classSettings, manualAssignments, waitlistedAssignments, manualTransitionDates, sortKey, sortDir]);
 
-  const handleUpdateStudent = (id: string, updates: Partial<Student>) => {
-    setStudents(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
+  const handleUpdateStudent = async (id: string, updates: Partial<Student>) => {
+    try {
+      await updateDoc(doc(db, "students", id), updates);
+    } catch (e) {
+      console.error("Update Student Error:", e);
+      showConfirmation("Error: Connection Failed");
+    }
   };
 
-  const handleAddRelationship = (sourceId: string, targetId: string, type: 'S' | 'F') => {
-    setStudents(prev => {
-      return prev.map(s => {
-        if (s.id === sourceId) {
-          if (s.relationships.some(r => r.targetId === targetId)) return s;
-          return { ...s, relationships: [...s.relationships, { targetId, type }] };
+  const handleAddRelationship = async (sourceId: string, targetId: string, type: 'S' | 'F') => {
+    const batch = writeBatch(db);
+    const sourceRef = doc(db, "students", sourceId);
+    const targetRef = doc(db, "students", targetId);
+
+    try {
+      const sourceSnap = await getDoc(sourceRef);
+      const targetSnap = await getDoc(targetRef);
+
+      if (sourceSnap.exists() && targetSnap.exists()) {
+        const sourceRel = sourceSnap.data().relationships || [];
+        const targetRel = targetSnap.data().relationships || [];
+
+        if (!sourceRel.some((r: any) => r.targetId === targetId)) {
+          batch.update(sourceRef, { relationships: [...sourceRel, { targetId, type }] });
         }
-        if (s.id === targetId) {
-          if (s.relationships.some(r => r.targetId === sourceId)) return s;
-          return { ...s, relationships: [...s.relationships, { targetId: sourceId, type }] };
+        if (!targetRel.some((r: any) => r.targetId === sourceId)) {
+          batch.update(targetRef, { relationships: [...targetRel, { targetId: sourceId, type }] });
         }
-        return s;
-      });
-    });
-    showConfirmation(type === 'S' ? "Sibling link established" : "Friend link established");
+        await batch.commit();
+        showConfirmation(type === 'S' ? "Sibling link established" : "Friend link established");
+      }
+    } catch (e) {
+      console.error("Add Relationship Error:", e);
+      showConfirmation("Error: Connection Failed");
+    }
   };
 
-  const handleAddStudent = (e: React.FormEvent) => {
+  const handleAddStudent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStudent.name || !newStudent.dob) return;
-    const student: Student = {
-      id: crypto.randomUUID(), 
-      name: newStudent.name, 
-      dob: standardizeDateDisplay(newStudent.dob), 
-      fte: 1.0, 
-      isStaffChild: false, 
-      isPromo: false, 
-      relationships: [], 
-      allergies: [], 
-      medications: [], 
-      emergencyContact: '',
-    };
-    setStudents(prev => [...prev, student]);
-    setIsAddingStudent(false);
-    setNewStudent({ name: '', dob: '' });
-    showConfirmation("Student enrolled successfully");
+    try {
+      await addDoc(collection(db, "students"), {
+        name: newStudent.name,
+        dob: standardizeDateDisplay(newStudent.dob),
+        fte: 1.0, isStaffChild: false, isPromo: false, relationships: [], 
+        allergies: [], medications: [], emergencyContact: '',
+        createdAt: serverTimestamp()
+      });
+      setIsAddingStudent(false);
+      setNewStudent({ name: '', dob: '' });
+      showConfirmation("Student enrolled successfully");
+    } catch (e) {
+      console.error("Add Student Error:", e);
+      showConfirmation("Error: Connection Failed");
+    }
   };
 
-  const handleBulkAdd = () => {
+  const handleBulkAdd = async () => {
     const lines = bulkInput.split('\n').filter(l => l.trim());
-    const newOnes: Student[] = [];
+    const batch = writeBatch(db);
+    let count = 0;
     
     lines.forEach(line => {
-      // Split by tab (Excel) or comma (CSV)
-      const parts = line.split(/[,\t]/);
+      // Split by common Excel/CSV separators
+      const parts = line.split(/[,\t]/).map(p => p.trim()).filter(Boolean);
       if (parts.length < 2) return;
       
-      const name = parts[0].trim();
-      const rawDob = parts[1].trim();
-      const dobDate = parseDate(rawDob);
+      let detectedName = "";
+      let detectedDob = "";
       
-      if (name && dobDate) {
-        newOnes.push({ 
-          id: crypto.randomUUID(), 
-          name, 
-          dob: standardizeDateDisplay(rawDob), 
+      // Attempt to find which column is the date
+      // In Excel exports, it's often the last column (Peggy [Tab] Green [Tab] 05/12/2022)
+      let dateIndex = -1;
+      for (let i = parts.length - 1; i >= 0; i--) {
+        if (parseDate(parts[i])) {
+          dateIndex = i;
+          break;
+        }
+      }
+
+      if (dateIndex !== -1) {
+        detectedDob = standardizeDateDisplay(parts[dateIndex]);
+        // Combine everything before the date as the name (e.g., "Peggy Green")
+        detectedName = parts.slice(0, dateIndex).join(" ");
+      } else {
+        // Fallback to simple format if no clear date found
+        detectedName = parts[0];
+        detectedDob = parts[1];
+      }
+
+      const validDate = parseDate(detectedDob);
+      if (detectedName && validDate) {
+        const ref = doc(collection(db, "students"));
+        batch.set(ref, { 
+          name: detectedName, 
+          dob: detectedDob, 
           fte: 1.0, 
-          isStaffChild: false, 
-          isPromo: false, 
-          relationships: [], 
-          allergies: [], 
-          medications: [], 
-          emergencyContact: '' 
+          isStaffChild: false, isPromo: false, relationships: [], 
+          allergies: [], medications: [], emergencyContact: '',
+          createdAt: serverTimestamp()
         });
+        count++;
       }
     });
 
-    if (newOnes.length > 0) {
-      setStudents(prev => [...prev, ...newOnes]);
-      showConfirmation(`Successfully uploaded ${newOnes.length} records`);
+    if (count > 0) {
+      try {
+        await batch.commit();
+        showConfirmation(`Successfully uploaded ${count} records`);
+      } catch (e) {
+        console.error("Batch Commit Error:", e);
+        showConfirmation("Error: Permission Denied or Connection Failed");
+      }
     } else {
-      showConfirmation("No valid records found in import");
+      showConfirmation("No valid records found. Check format: Name [Tab] Date");
     }
     
     setIsBulkAdding(false);
@@ -394,10 +409,9 @@ const App: React.FC = () => {
   };
 
   const updateClassDisplay = (className: string, key: keyof RosterDisplaySettings) => {
-    setClassDisplaySettings(prev => {
-      const current = prev[className] || { showDob: false, showAge: false, showTransition: false };
-      return { ...prev, [className]: { ...current, [key]: !current[key] } };
-    });
+    const current = classDisplaySettings[className] || { showDob: false, showAge: false, showTransition: false };
+    const next = { ...current, [key]: !current[key] };
+    saveGlobalSettings({ classDisplaySettings: { ...classDisplaySettings, [className]: next } });
   };
 
   return (
@@ -445,7 +459,7 @@ const App: React.FC = () => {
                 type="text" 
                 placeholder="MM/DD/YYYY"
                 value={projectionDate} 
-                onChange={(e) => setProjectionDate(autoFormatDate(e.target.value))} 
+                onChange={(e) => saveGlobalSettings({ projectionDate: autoFormatDate(e.target.value) })} 
                 className="bg-transparent border-none text-xs font-bold text-slate-700 focus:ring-0 outline-none p-0 w-full" 
               />
             </div>
@@ -455,6 +469,7 @@ const App: React.FC = () => {
 
         {activeTab === Tab.DASHBOARD && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-6 duration-700">
+            {/* Dashboard Stats */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 hover:shadow-md transition-all">
                 <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Enrollment Total</p>
@@ -470,11 +485,11 @@ const App: React.FC = () => {
               </div>
             </div>
 
+            {/* AI Insights */}
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100">
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-lg font-bold text-slate-800 tracking-tight flex items-center gap-2">
-                  <Sparkles className="w-5 h-5 text-indigo-500" />
-                  AI Enrollment Insights
+                  <Sparkles className="w-5 h-5 text-indigo-500" /> AI Enrollment Insights
                 </h3>
                 <button onClick={async () => {
                   setLoadingInsights(true);
@@ -498,6 +513,7 @@ const App: React.FC = () => {
               )}
             </div>
 
+            {/* Capacity Chart */}
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100">
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-lg font-bold text-slate-800 tracking-tight">Class Capacity</h3>
@@ -508,6 +524,7 @@ const App: React.FC = () => {
               {!isChartMinimized && <ClassBarChart data={dashboardData} />}
             </div>
 
+            {/* Class Lists */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 items-start">
               {classSettings.filter(c => !c.hidden && !c.isSpecial).map(cls => {
                 const enrolled = students.filter(s => getEffectiveClass(s, projectionDate, classSettings, manualAssignments, manualTransitionDates) === cls.name && !waitlistedAssignments[s.id]);
@@ -519,18 +536,12 @@ const App: React.FC = () => {
                     e.preventDefault(); 
                     const studentId = e.dataTransfer.getData("studentId"); 
                     if (!studentId) return; 
-                    handleUpdateStudent(studentId, { subdivisionIndex: 0 }); 
-                    setManualAssignments(prev => ({ ...prev, [studentId]: cls.name })); 
+                    handleUpdateStudent(studentId, { subdivisionIndex: 0, manualClass: cls.name } as any); 
                   }} className="bg-white rounded-[2rem] shadow-sm border border-slate-200 overflow-hidden flex flex-col h-full min-h-[350px] transition-all hover:shadow-xl relative">
                     <div className="p-5 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
                       <h4 className="font-bold text-slate-800 text-[10px] uppercase tracking-widest truncate">{cls.name}</h4>
                       <div className="flex items-center gap-2">
-                        <button 
-                          onClick={() => setOpenSettingsClass(isSettingsOpen ? null : cls.name)}
-                          className={`p-1.5 rounded-lg transition-colors ${isSettingsOpen ? 'bg-indigo-100 text-indigo-600' : 'text-slate-400 hover:bg-slate-100'}`}
-                        >
-                          <Settings2 className="w-4 h-4" />
-                        </button>
+                        <button onClick={() => setOpenSettingsClass(isSettingsOpen ? null : cls.name)} className={`p-1.5 rounded-lg transition-colors ${isSettingsOpen ? 'bg-indigo-100 text-indigo-600' : 'text-slate-400 hover:bg-slate-100'}`}><Settings2 className="w-4 h-4" /></button>
                         <span className="text-[10px] px-2.5 py-1 rounded-lg font-black bg-white border border-slate-200 text-slate-600 shadow-sm">{enrolled.length}/{cls.capacity}</span>
                       </div>
                     </div>
@@ -538,25 +549,17 @@ const App: React.FC = () => {
                     {isSettingsOpen && (
                       <div className="absolute top-16 right-5 left-5 z-20 bg-white shadow-2xl rounded-2xl border border-slate-100 p-4 space-y-3 animate-in zoom-in-95 duration-200">
                         <p className="text-[9px] font-black uppercase text-slate-400 tracking-[0.2em] mb-2">Display Controls</p>
-                        <label className="flex items-center justify-between cursor-pointer group">
-                          <span className="text-[10px] font-bold text-slate-600">Show Birthdays</span>
-                          <input type="checkbox" checked={settings.showDob} onChange={() => updateClassDisplay(cls.name, 'showDob')} className="w-4 h-4 rounded text-indigo-600" />
-                        </label>
-                        <label className="flex items-center justify-between cursor-pointer group">
-                          <span className="text-[10px] font-bold text-slate-600">Show Age (y/m)</span>
-                          <input type="checkbox" checked={settings.showAge} onChange={() => updateClassDisplay(cls.name, 'showAge')} className="w-4 h-4 rounded text-indigo-600" />
-                        </label>
-                        <label className="flex items-center justify-between cursor-pointer group">
-                          <span className="text-[10px] font-bold text-slate-600">Transition Dates</span>
-                          <input type="checkbox" checked={settings.showTransition} onChange={() => updateClassDisplay(cls.name, 'showTransition')} className="w-4 h-4 rounded text-indigo-600" />
-                        </label>
+                        {['showDob', 'showAge', 'showTransition'].map((key) => (
+                          <label key={key} className="flex items-center justify-between cursor-pointer group">
+                            <span className="text-[10px] font-bold text-slate-600">{key === 'showDob' ? 'Show Birthdays' : key === 'showAge' ? 'Show Age (y/m)' : 'Transition Dates'}</span>
+                            <input type="checkbox" checked={(settings as any)[key]} onChange={() => updateClassDisplay(cls.name, key as any)} className="w-4 h-4 rounded text-indigo-600" />
+                          </label>
+                        ))}
                       </div>
                     )}
 
                     <div className="p-4 space-y-3 flex-1 max-h-[500px] overflow-y-auto custom-scrollbar">
-                      {enrolled.length === 0 ? (
-                        <div className="h-full flex items-center justify-center py-10 opacity-30 italic text-[11px]">No students assigned</div>
-                      ) : enrolled.map(s => {
+                      {enrolled.length === 0 ? <div className="h-full flex items-center justify-center py-10 opacity-30 italic text-[11px]">No students assigned</div> : enrolled.map(s => {
                         const transitionDate = getProjectedTransitionDate(s, cls.name, classSettings);
                         const hasSafetyIssues = s.allergies.length > 0 || s.medications.length > 0;
                         return (
@@ -569,21 +572,9 @@ const App: React.FC = () => {
                             </div>
                             {(settings.showDob || settings.showAge || settings.showTransition) && (
                               <div className="mt-2.5 space-y-1.5 pl-6 border-l-2 border-slate-200 ml-1.5">
-                                {settings.showDob && (
-                                  <p className="text-[10px] font-semibold text-slate-400 flex items-center gap-2 uppercase tracking-tighter">
-                                    <Calendar className="w-3 h-3" /> {new Date(s.dob).toLocaleDateString()}
-                                  </p>
-                                )}
-                                {settings.showAge && (
-                                  <p className="text-[10px] font-bold text-indigo-600 flex items-center gap-2 uppercase tracking-tighter">
-                                    <Clock className="w-3 h-3" /> {formatDetailedAge(s.dob, projectionDate)}
-                                  </p>
-                                )}
-                                {settings.showTransition && transitionDate && (
-                                  <p className="text-[9px] font-black text-emerald-600 flex items-center gap-2 uppercase tracking-tighter bg-emerald-50 px-2 py-0.5 rounded-md w-fit mt-1">
-                                    Next: {transitionDate}
-                                  </p>
-                                )}
+                                {settings.showDob && <p className="text-[10px] font-semibold text-slate-400 flex items-center gap-2 uppercase tracking-tighter"><Calendar className="w-3 h-3" /> {s.dob}</p>}
+                                {settings.showAge && <p className="text-[10px] font-bold text-indigo-600 flex items-center gap-2 uppercase tracking-tighter"><Clock className="w-3 h-3" /> {formatDetailedAge(s.dob, projectionDate)}</p>}
+                                {settings.showTransition && transitionDate && <p className="text-[9px] font-black text-emerald-600 flex items-center gap-2 uppercase tracking-tighter bg-emerald-50 px-2 py-0.5 rounded-md w-fit mt-1">Next: {transitionDate}</p>}
                               </div>
                             )}
                             {highlightedStudentId === s.id && <RelationshipHoverDetails studentId={s.id} />}
@@ -598,6 +589,7 @@ const App: React.FC = () => {
           </div>
         )}
 
+        {/* Roster Tab */}
         {activeTab === Tab.ROSTER && (
           <div className="animate-in fade-in slide-in-from-bottom-6 duration-700 space-y-8">
             <div className="flex items-center justify-between">
@@ -608,86 +600,85 @@ const App: React.FC = () => {
               </div>
               <div className="flex items-center gap-4">
                 {selectedIds.size > 0 && (
-                  <button onClick={() => { if(window.confirm(`Permanently remove ${selectedIds.size} records?`)) { setStudents(prev => prev.filter(s => !selectedIds.has(s.id))); setSelectedIds(new Set()); showConfirmation(`Removed ${selectedIds.size} records`); } }} className="bg-rose-600 text-white px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-widest shadow-lg hover:bg-rose-700 transition-all flex items-center gap-3 animate-in fade-in slide-in-from-right-4"><Trash2 className="w-4 h-4" /> Delete ({selectedIds.size})</button>
+                  <button onClick={async () => { if(window.confirm(`Permanently remove ${selectedIds.size} records?`)) { const batch = writeBatch(db); selectedIds.forEach(id => batch.delete(doc(db, "students", id))); await batch.commit(); setSelectedIds(new Set()); showConfirmation(`Removed ${selectedIds.size} records`); } }} className="bg-rose-600 text-white px-6 py-3 rounded-2xl text-[10px] font-bold uppercase tracking-widest shadow-lg hover:bg-rose-700 transition-all flex items-center gap-3 animate-in fade-in slide-in-from-right-4"><Trash2 className="w-4 h-4" /> Delete ({selectedIds.size})</button>
                 )}
                 <button onClick={() => setIsBulkAdding(true)} className="px-8 py-3 bg-slate-800 text-white rounded-2xl text-[10px] font-bold uppercase tracking-widest hover:bg-slate-900 transition-all flex items-center space-x-2 shadow-lg"><Upload className="w-4 h-4" /><span>Upload Data</span></button>
               </div>
             </div>
-
+            
             <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden">
-              <div className="p-8 border-b border-slate-100 flex items-center justify-between gap-6">
+               <div className="p-8 border-b border-slate-100 flex items-center justify-between gap-6">
                 <div className="relative flex-1">
                   <Search className="w-5 h-5 absolute left-6 top-1/2 -translate-y-1/2 text-slate-300" />
                   <input type="text" placeholder="Filter roster directory..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-16 pr-8 py-5 bg-slate-50 border-none rounded-[1.5rem] text-sm font-semibold focus:ring-2 focus:ring-slate-100 outline-none shadow-inner" />
                 </div>
               </div>
-              <div className="overflow-x-auto">
+               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm border-collapse">
                   <thead className="bg-slate-50/50 border-b border-slate-100">
                     <tr>
-                      <th className="px-8 py-6 w-16"><button onClick={() => { if (selectedIds.size === filteredStudents.length && filteredStudents.length > 0) setSelectedIds(new Set()); else setSelectedIds(new Set(filteredStudents.map(s => s.id))); }} className="p-1 hover:bg-white rounded-lg transition-colors">{selectedIds.size === filteredStudents.length && filteredStudents.length > 0 ? <CheckSquare className="w-4.5 h-4.5 text-indigo-600" /> : <Square className="w-4.5 h-4.5 text-slate-300" />}</button></th>
+                      <th className="px-8 py-6 w-16">
+                        <button onClick={() => { if (selectedIds.size === filteredStudents.length && filteredStudents.length > 0) setSelectedIds(new Set()); else setSelectedIds(new Set(filteredStudents.map(s => s.id))); }} className="p-1 hover:bg-white rounded-lg transition-colors">
+                          {selectedIds.size === filteredStudents.length && filteredStudents.length > 0 ? <CheckSquare className="w-4.5 h-4.5 text-indigo-600" /> : <Square className="w-4.5 h-4.5 text-slate-300" />}
+                        </button>
+                      </th>
                       <th className="px-4 py-6 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest w-12">#</th>
-                      <th className="px-8 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest sticky left-0 bg-slate-50"><button onClick={() => { if(sortKey === 'name') setSortDir(sortDir === 'asc' ? 'desc' : 'asc'); else { setSortKey('name'); setSortDir('asc'); } }} className="flex items-center gap-2 hover:text-slate-800 transition-colors">Student <ArrowUpDown className="w-3 h-3" /></button></th>
-                      <th className="px-8 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest"><button onClick={() => { if(sortKey === 'dob') setSortDir(sortDir === 'asc' ? 'desc' : 'asc'); else { setSortKey('dob'); setSortDir('asc'); } }} className="flex items-center gap-2 hover:text-slate-800 transition-colors">DOB <ArrowUpDown className="w-3 h-3" /></button></th>
-                      <th className="px-8 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest"><button onClick={() => { if(sortKey === 'class') setSortDir(sortDir === 'asc' ? 'desc' : 'asc'); else { setSortKey('class'); setSortDir('asc'); } }} className="flex items-center gap-2 hover:text-slate-800 transition-colors">Current Class <ArrowUpDown className="w-3 h-3" /></button></th>
+                      <th className="px-8 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest sticky left-0 bg-slate-50">Student</th>
+                      <th className="px-8 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">DOB</th>
+                      <th className="px-8 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Current Class</th>
                       <th className="px-8 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">FTE</th>
-                      <th className="px-8 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Utility</th>
+                      <th className="px-8 py-6 text-right">Utility</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
                     {filteredStudents.map((s, idx) => {
                       const isExpanded = expandedStudentId === s.id;
-                      const isHighlighted = highlightedStudentId === s.id;
                       const currentClass = getEffectiveClass(s, projectionDate, classSettings, manualAssignments, manualTransitionDates);
                       const isSelected = selectedIds.has(s.id);
-                      const hasSafetyIssues = s.allergies.length > 0 || s.medications.length > 0;
                       return (
                         <React.Fragment key={s.id}>
-                          <tr onMouseEnter={() => setHighlightedStudentId(s.id)} onMouseLeave={() => setHighlightedStudentId(null)} className={`hover:bg-slate-50 transition-all group ${isExpanded ? 'bg-slate-50 shadow-inner' : ''} ${isSelected ? 'bg-indigo-50/30' : ''}`}>
+                          <tr className={`hover:bg-slate-50 transition-all group ${isExpanded ? 'bg-slate-50' : ''} ${isSelected ? 'bg-indigo-50/30' : ''}`}>
                             <td className="px-8 py-6"><button onClick={() => { const next = new Set(selectedIds); if (next.has(s.id)) next.delete(s.id); else next.add(s.id); setSelectedIds(next); }} className="p-1 hover:bg-white rounded-lg transition-colors">{isSelected ? <CheckSquare className="w-4.5 h-4.5 text-indigo-600" /> : <Square className="w-4.5 h-4.5 text-slate-200 group-hover:text-slate-300" />}</button></td>
                             <td className="px-4 py-6 text-center text-[11px] font-bold text-slate-300">{idx + 1}</td>
-                            <td className="px-8 py-6 sticky left-0 bg-white group-hover:bg-slate-50 z-10 min-w-[240px] relative">
+                            <td className="px-8 py-6 sticky left-0 bg-white group-hover:bg-slate-50 z-10 min-w-[240px]">
                               <div className="flex items-center space-x-4">
                                 <button onClick={() => setExpandedStudentId(isExpanded ? null : s.id)} className="p-1.5 hover:bg-slate-100 rounded-xl transition-all">{isExpanded ? <ChevronUp className="w-4.5 h-4.5 text-slate-400" /> : <ChevronDown className="w-4.5 h-4.5 text-slate-400" />}</button>
-                                <span className="font-bold cursor-help transition-colors text-[13px] text-slate-800">{s.name}</span>
-                                {s.isStaffChild && <ShieldCheck className="w-4 h-4" style={{ color: COLORS.staffPurple }} />}
-                                {hasSafetyIssues && <AlertTriangle className="w-4 h-4 text-rose-500" />}
-                                {isHighlighted && <RelationshipHoverDetails studentId={s.id} />}
+                                <span className="font-bold text-[13px] text-slate-800">{s.name}</span>
                               </div>
                             </td>
-                            <td className="px-8 py-6 text-xs font-bold text-slate-500">{s.dob}</td>
+                            <td className="px-8 py-6 text-xs font-bold text-slate-500 text-center">{s.dob}</td>
                             <td className="px-8 py-6 text-[10px] font-bold text-slate-500 uppercase tracking-widest">{currentClass}</td>
                             <td className="px-8 py-6 text-center font-bold text-slate-600">{s.fte.toFixed(1)}</td>
-                            <td className="px-8 py-6 text-right"><button onClick={() => { if(window.confirm('Remove record?')) { setStudents(prev => prev.filter(st => st.id !== s.id)); showConfirmation("Record removed"); } }} className="p-2.5 text-slate-200 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition-all"><Trash2 className="w-4.5 h-4.5" /></button></td>
+                            <td className="px-8 py-6 text-right"><button onClick={async () => { if(window.confirm('Remove record?')) { await deleteDoc(doc(db, "students", s.id)); showConfirmation("Record removed"); } }} className="p-2.5 text-slate-200 hover:text-rose-600 opacity-0 group-hover:opacity-100 transition-all"><Trash2 className="w-4.5 h-4.5" /></button></td>
                           </tr>
                           {isExpanded && (
-                            <tr className="bg-slate-50/50"><td colSpan={7} className="px-12 py-10 border-l-[6px] border-slate-300 shadow-inner"><div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10">
-                              <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
-                                <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><ClipboardList className="w-4 h-4" /><span>Administrative</span></h5>
-                                <div className="space-y-4">
-                                  <button onClick={() => setIsEditingStudent(s)} className="w-full py-3.5 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-bold uppercase flex items-center justify-center space-x-3 border border-slate-100 transition-all shadow-sm"><UserCog className="w-4 h-4" /><span>Edit Identity</span></button>
-                                  <label className="flex items-center justify-between p-3.5 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-colors"><span className="text-[10px] font-bold text-slate-500 uppercase">Staff Child</span><input type="checkbox" checked={s.isStaffChild} onChange={e => handleUpdateStudent(s.id, { isStaffChild: e.target.checked })} className="w-5 h-5 rounded-lg text-indigo-600" /></label>
-                                  <button onClick={() => setRelModalData({ sourceId: s.id, search: '', type: 'S' })} className="w-full py-3.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-2xl text-[10px] font-bold uppercase flex items-center justify-center space-x-3 border border-indigo-100 transition-all shadow-sm"><UserPlus className="w-4 h-4" /><span>Link Connections</span></button>
+                            <tr className="bg-slate-50/50"><td colSpan={7} className="px-12 py-10 border-l-[6px] border-slate-300 shadow-inner">
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10">
+                                <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
+                                  <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><ClipboardList className="w-4 h-4" /><span>Administrative</span></h5>
+                                  <div className="space-y-4">
+                                    <button onClick={() => setIsEditingStudent(s)} className="w-full py-3.5 bg-slate-50 hover:bg-slate-100 text-slate-600 rounded-2xl text-[10px] font-bold uppercase flex items-center justify-center space-x-3 border border-slate-100 transition-all shadow-sm"><UserCog className="w-4 h-4" /><span>Edit Identity</span></button>
+                                    <label className="flex items-center justify-between p-3.5 bg-slate-50 rounded-2xl cursor-pointer hover:bg-slate-100 transition-colors"><span className="text-[10px] font-bold text-slate-500 uppercase">Staff Child</span><input type="checkbox" checked={s.isStaffChild} onChange={e => handleUpdateStudent(s.id, { isStaffChild: e.target.checked })} className="w-5 h-5 rounded-lg text-indigo-600" /></label>
+                                    <button onClick={() => setRelModalData({ sourceId: s.id, search: '', type: 'S' })} className="w-full py-3.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-2xl text-[10px] font-bold uppercase flex items-center justify-center space-x-3 border border-indigo-100 transition-all shadow-sm"><UserPlus className="w-4 h-4" /><span>Link Connections</span></button>
+                                  </div>
+                                </div>
+                                {/* Health panels */}
+                                <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
+                                  <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><AlertCircle className="w-4 h-4 text-rose-500" /><span>Safety Profile</span></h5>
+                                  <div className="space-y-3">{s.allergies?.map(a => (<div key={a.id} className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center group/item border border-slate-100 shadow-sm"><div><p className="text-[11px] font-bold text-slate-800">{a.substance}</p></div></div>))}
+                                  <button onClick={() => setAllergyEntry({ studentId: s.id, substance: '', severity: 'Moderate', lastReaction: '', comments: '' })} className="w-full py-3 bg-rose-50/50 text-rose-600 rounded-2xl text-[10px] font-bold uppercase border-2 border-dashed border-rose-100 flex items-center justify-center space-x-3 transition-all hover:bg-rose-50"><PlusCircle className="w-4 h-4" /><span>Add Allergy</span></button></div>
+                                </div>
+                                <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
+                                  <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><Pill className="w-4 h-4 text-indigo-500" /><span>Medications</span></h5>
+                                  <div className="space-y-3">{s.medications?.map(m => (<div key={m.id} className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center group/item border border-slate-100 shadow-sm"><div><p className="text-[11px] font-bold text-slate-800">{m.name}</p><p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Exp: {m.expirationDate}</p></div></div>))}
+                                  <button onClick={() => setMedEntry({ studentId: s.id, name: '', frequency: '', expiration: '' })} className="w-full py-3 bg-indigo-50/50 text-indigo-600 rounded-2xl text-[10px] font-bold uppercase border-2 border-dashed border-indigo-100 flex items-center justify-center space-x-3 transition-all hover:bg-indigo-50"><PlusCircle className="w-4 h-4" /><span>Add Medication</span></button></div>
+                                </div>
+                                <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
+                                  <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><FileText className="w-4 h-4" /><span>Documentation</span></h5>
+                                  <label className="block space-y-2"><span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block ml-1">Form Expiry</span><input type="text" placeholder="MM/DD/YYYY" value={s.documentExpirationDate || ''} onChange={e => handleUpdateStudent(s.id, { documentExpirationDate: autoFormatDate(e.target.value) })} className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-[11px] font-bold outline-none shadow-sm" /></label>
                                 </div>
                               </div>
-                              <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
-                                <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><AlertCircle className="w-4 h-4 text-rose-500" /><span>Safety Profile</span></h5>
-                                <div className="space-y-3">{s.allergies.map(a => (<div key={a.id} className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center group/item border border-slate-100 shadow-sm"><div><p className="text-[11px] font-bold text-slate-800">{a.substance}</p><p className={`text-[8px] font-bold uppercase ${a.severity === 'Severe' ? 'text-rose-500' : 'text-slate-400'}`}>{a.severity}</p></div><div className="flex items-center space-x-1 opacity-0 group-hover/item:opacity-100"><button onClick={() => setAllergyEntry({ studentId: s.id, ...a })} className="p-2 hover:text-indigo-600"><Edit2 className="w-3.5 h-3.5" /></button></div></div>))}
-                                <button onClick={() => setAllergyEntry({ studentId: s.id, substance: '', severity: 'Moderate', lastReaction: '', comments: '' })} className="w-full py-3 bg-rose-50/50 text-rose-600 rounded-2xl text-[10px] font-bold uppercase border-2 border-dashed border-rose-100 flex items-center justify-center space-x-3 transition-all hover:bg-rose-50"><PlusCircle className="w-4 h-4" /><span>Add Allergy</span></button></div>
-                              </div>
-                              <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
-                                <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><Pill className="w-4 h-4 text-indigo-500" /><span>Medications</span></h5>
-                                <div className="space-y-3">{s.medications.map(m => (<div key={m.id} className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center group/item border border-slate-100 shadow-sm"><div><p className="text-[11px] font-bold text-slate-800">{m.name}</p><p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Exp: {m.expirationDate}</p></div><div className="flex items-center space-x-1 opacity-0 group-hover/item:opacity-100"><button onClick={() => setMedEntry({ studentId: s.id, ...m, expiration: m.expirationDate })} className="p-2 hover:text-indigo-600"><Edit2 className="w-3.5 h-3.5" /></button></div></div>))}
-                                <button onClick={() => setMedEntry({ studentId: s.id, name: '', frequency: '', expiration: '' })} className="w-full py-3 bg-indigo-50/50 text-indigo-600 rounded-2xl text-[10px] font-bold uppercase border-2 border-dashed border-indigo-100 flex items-center justify-center space-x-3 transition-all hover:bg-indigo-50"><PlusCircle className="w-4 h-4" /><span>Add Medication</span></button></div>
-                              </div>
-                              <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
-                                <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><FileText className="w-4 h-4" /><span>Documentation</span></h5>
-                                <div className="p-5 bg-slate-50 rounded-2xl space-y-5 border border-slate-100 shadow-inner">
-                                  <div className="flex items-center justify-between"><span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Enrollment Form</span><input type="file" className="hidden" id={`upload-${s.id}`} onChange={e => handleUpdateStudent(s.id, { medicalFormUrl: '#' })} /><label htmlFor={`upload-${s.id}`} className="p-2 bg-white border border-slate-200 rounded-xl cursor-pointer hover:shadow-md transition-all shadow-sm"><Upload className="w-3.5 h-3.5 text-slate-600" /></label></div>
-                                  <label className="block space-y-2"><span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block ml-1">Expiration</span><input type="text" placeholder="MM/DD/YYYY" value={s.documentExpirationDate || ''} onChange={e => handleUpdateStudent(s.id, { documentExpirationDate: autoFormatDate(e.target.value) })} className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl text-[11px] font-bold outline-none shadow-sm" /></label>
-                                </div>
-                              </div>
-                            </div></td></tr>
+                            </td></tr>
                           )}
                         </React.Fragment>
                       );
@@ -699,88 +690,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {activeTab === Tab.MEDICAL && (
-          <div className="space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              <div className="bg-white p-10 rounded-[3rem] shadow-sm border-l-[12px] border-rose-500 border border-slate-100 hover:shadow-xl transition-all">
-                <div className="flex justify-between items-center mb-6">
-                  <h3 className="text-xl font-bold text-slate-800 flex items-center gap-3"><Bell className="w-6 h-6 text-rose-500 animate-pulse" /> Urgent (7 Days)</h3>
-                  <span className="bg-rose-500 text-white px-5 py-1.5 rounded-full text-[12px] font-bold shadow-lg">{expirationGroups.urgent.length} Events</span>
-                </div>
-                <div className="space-y-4 overflow-y-auto max-h-[350px] pr-2 custom-scrollbar">
-                  {expirationGroups.urgent.length === 0 ? <p className="text-slate-400 text-sm italic py-4 text-center">Zero urgent expirations detected.</p> :
-                    expirationGroups.urgent.map((item, idx) => (
-                      <div key={idx} className="bg-slate-50 p-5 rounded-2xl flex justify-between items-center border border-slate-100 hover:bg-white hover:shadow-sm transition-all shadow-sm">
-                        <div><p className="text-sm font-bold text-slate-800">{item.studentName}</p><p className="text-[10px] font-bold text-rose-500 uppercase tracking-widest">{item.itemName} ({item.type})</p></div>
-                        <div className="text-right"><p className="text-lg font-bold text-rose-600 leading-none">{item.daysLeft}d</p><p className="text-[9px] text-slate-400 uppercase font-black">Left</p></div>
-                      </div>
-                    ))
-                  }
-                </div>
-              </div>
-              <div className="bg-white p-10 rounded-[3rem] shadow-sm border-l-[12px] border-amber-400 border border-slate-100 hover:shadow-xl transition-all">
-                <div className="flex justify-between items-center mb-6">
-                  <h3 className="text-xl font-bold text-slate-800 flex items-center gap-3"><Clock className="w-6 h-6 text-amber-500" /> Upcoming (30 Days)</h3>
-                  <span className="bg-amber-400 text-white px-5 py-1.5 rounded-full text-[12px] font-bold shadow-lg">{expirationGroups.upcoming.length} Events</span>
-                </div>
-                <div className="space-y-4 overflow-y-auto max-h-[350px] pr-2 custom-scrollbar">
-                  {expirationGroups.upcoming.length === 0 ? <p className="text-slate-400 text-sm italic py-4 text-center">No upcoming expirations found.</p> :
-                    expirationGroups.upcoming.map((item, idx) => (
-                      <div key={idx} className="bg-slate-50 p-5 rounded-2xl flex justify-between items-center border border-slate-100 hover:bg-white hover:shadow-sm transition-all shadow-sm">
-                        <div><p className="text-sm font-bold text-slate-800">{item.studentName}</p><p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest">{item.itemName} ({item.type})</p></div>
-                        <div className="text-right"><p className="text-lg font-bold text-amber-500 leading-none">{item.daysLeft}d</p><p className="text-[9px] text-slate-400 uppercase font-black">Left</p></div>
-                      </div>
-                    ))
-                  }
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden">
-              <div className="p-8 border-b border-slate-100 flex items-center justify-between">
-                <div className="relative w-1/2">
-                  <Search className="w-5 h-5 absolute left-6 top-1/2 -translate-y-1/2 text-slate-300" />
-                  <input type="text" placeholder="Search safety database..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-16 pr-8 py-5 bg-slate-50 border-none rounded-[1.5rem] text-sm font-semibold focus:ring-2 focus:ring-slate-100 outline-none shadow-inner" />
-                </div>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm border-collapse">
-                  <thead className="bg-slate-50/50 border-b border-slate-100">
-                    <tr>
-                      <th className="px-10 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] sticky left-0 bg-slate-50">Student</th>
-                      <th className="px-10 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">Allergies</th>
-                      <th className="px-10 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">Medication Log</th>
-                      <th className="px-10 py-6 text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">Status & Expiry</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {students.filter(s => (s.allergies.length > 0 || s.medications.length > 0 || s.medicalFormUrl) && s.name.toLowerCase().includes(searchTerm.toLowerCase())).map((s) => (
-                      <tr key={s.id} className="hover:bg-slate-50 transition-all group">
-                        <td className="px-10 py-8 sticky left-0 bg-white group-hover:bg-slate-50 min-w-[220px]">
-                          <span className="font-bold text-slate-800 text-[14px]">{s.name}</span>
-                          <p className="text-[9px] font-bold text-slate-400 uppercase mt-0.5">{getEffectiveClass(s, projectionDate, classSettings, manualAssignments, manualTransitionDates)}</p>
-                        </td>
-                        <td className="px-10 py-8 space-y-3">{s.allergies.map(a => (<div key={a.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100 shadow-sm"><p className="text-[11px] font-bold text-slate-700">{a.substance}</p><p className={`text-[8px] font-bold uppercase tracking-widest ${a.severity === 'Severe' ? 'text-rose-500' : 'text-slate-400'}`}>{a.severity} Severity</p></div>))}</td>
-                        <td className="px-10 py-8 space-y-3">{s.medications.map(m => {
-                          const urgent = flexibleParseDate(m.expirationDate);
-                          const isUrgent = urgent && Math.ceil((urgent.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)) <= 7;
-                          return (<div key={m.id} className="p-3 bg-indigo-50/30 rounded-xl border border-indigo-100 shadow-sm"><p className="text-[11px] font-bold text-indigo-800">{m.name} ({m.frequency})</p><p className={`text-[9px] font-bold uppercase tracking-widest ${isUrgent ? 'text-rose-500 animate-pulse font-black' : 'text-slate-400'}`}>Exp: {m.expirationDate}</p></div>);
-                        })}</td>
-                        <td className="px-10 py-8">{s.medicalFormUrl ? (
-                          <div className="p-4 bg-slate-50 rounded-2xl space-y-2 border border-slate-100 shadow-sm">
-                            <a href={s.medicalFormUrl} className="text-[11px] font-bold text-slate-700 flex items-center gap-2 hover:text-indigo-600 transition-colors"><FileText className="w-4 h-4" /> View Verified Form</a>
-                            <p className={`text-[10px] font-bold uppercase tracking-widest ${isExpiringSoon(s.documentExpirationDate, 7) ? 'text-rose-500 animate-pulse font-black' : 'text-slate-400'}`}>Expires: {s.documentExpirationDate || 'N/A'}</p>
-                          </div>
-                        ) : <div className="flex items-center gap-3 text-slate-300"><AlertTriangle className="w-5 h-5" /><span className="text-[10px] font-bold uppercase italic tracking-widest">Form Missing</span></div>}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
+        {/* Configurations Tab */}
         {activeTab === Tab.SETTINGS && (
           <div className="animate-in fade-in slide-in-from-bottom-8 duration-700 space-y-10 max-w-5xl mx-auto">
             <div className="bg-white p-16 rounded-[4rem] shadow-sm border border-slate-100">
@@ -790,16 +700,12 @@ const App: React.FC = () => {
                   <div key={cls.name} className={`px-12 py-6 rounded-3xl border-2 transition-all duration-300 ${cls.hidden ? 'bg-slate-50 border-slate-50 opacity-40' : 'bg-white border-slate-100 hover:border-slate-300 shadow-sm'}`}>
                     <div className="grid grid-cols-[1fr_140px_140px] gap-10 items-center">
                       <div className="flex items-center space-x-6">
-                        <button onClick={() => setClassSettings(prev => prev.map((c, i) => i === idx ? { ...c, hidden: !c.hidden } : c))} className="p-3 rounded-2xl transition-all bg-slate-50 text-slate-400 hover:text-slate-800 shadow-inner">{cls.hidden ? <EyeOff className="w-6 h-6" /> : <Eye className="w-6 h-6" />}</button>
+                        <button onClick={() => saveGlobalSettings({ classSettings: classSettings.map((c, i) => i === idx ? { ...c, hidden: !c.hidden } : c) })} className="p-3 rounded-2xl transition-all bg-slate-50 text-slate-400 hover:text-slate-800 shadow-inner">{cls.hidden ? <EyeOff className="w-6 h-6" /> : <Eye className="w-6 h-6" />}</button>
                         <p className="font-black text-slate-800 text-[18px] tracking-tight">{cls.name}</p>
                       </div>
                       <div className="flex flex-col items-center">
                         <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">Max Capacity</span>
-                        <input type="number" value={cls.capacity} onChange={(e) => setClassSettings(prev => prev.map((c, i) => i === idx ? { ...c, capacity: parseInt(e.target.value) || 0 } : c))} className="w-20 p-3 bg-slate-50 border-none rounded-2xl text-sm font-bold text-center shadow-inner" />
-                      </div>
-                      <div className="flex flex-col items-center">
-                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">Groups</span>
-                        <input type="number" min="1" value={cls.subdivisionCount || 1} onChange={(e) => setClassSettings(prev => prev.map((c, i) => i === idx ? { ...c, subdivisionCount: parseInt(e.target.value) || 1 } : c))} className="w-20 p-3 bg-slate-50 border-none rounded-2xl text-sm font-bold text-center shadow-inner" />
+                        <input type="number" value={cls.capacity} onChange={(e) => saveGlobalSettings({ classSettings: classSettings.map((c, i) => i === idx ? { ...c, capacity: parseInt(e.target.value) || 0 } : c) })} className="w-20 p-3 bg-slate-50 border-none rounded-2xl text-sm font-bold text-center shadow-inner" />
                       </div>
                     </div>
                   </div>
@@ -810,7 +716,7 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Enrollment Modal */}
+      {/* Modals */}
       {isAddingStudent && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
           <div className="bg-white w-full max-w-sm rounded-[3.5rem] shadow-2xl p-12 animate-in zoom-in-95 duration-300">
@@ -824,14 +730,13 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Editing Modal */}
       {isEditingStudent && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
           <div className="bg-white w-full max-w-sm rounded-[3.5rem] shadow-2xl p-12 animate-in zoom-in-95 duration-300">
             <h2 className="text-3xl font-bold mb-10 text-slate-800 text-center tracking-tight">Edit Identity</h2>
-            <form onSubmit={(e) => {
+            <form onSubmit={async (e) => {
               e.preventDefault();
-              setStudents(prev => prev.map(s => s.id === isEditingStudent.id ? isEditingStudent : s));
+              await handleUpdateStudent(isEditingStudent.id, { name: isEditingStudent.name, dob: standardizeDateDisplay(isEditingStudent.dob) });
               setIsEditingStudent(null);
               showConfirmation("Student updated successfully");
             }} className="space-y-8">
@@ -843,43 +748,15 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Bulk Sync Modal */}
       {isBulkAdding && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
           <div className="bg-white w-full max-w-2xl rounded-[3.5rem] shadow-2xl p-14 animate-in slide-in-from-top-12 duration-500">
             <h2 className="text-3xl font-bold mb-8 text-slate-800 tracking-tight">Bulk Registry Upload</h2>
-            <p className="text-slate-400 text-[10px] mb-4 font-bold uppercase tracking-widest">Supports Excel (Copy/Paste), Tabs, or Comma separated values.</p>
-            <textarea rows={12} placeholder="John Doe	01/01/2020&#10;Jane Smith, 05/15/2019" value={bulkInput} onChange={(e) => setBulkInput(e.target.value)} className="w-full px-8 py-7 bg-slate-50 border-none rounded-[2rem] outline-none font-mono text-sm shadow-inner focus:ring-4 focus:ring-slate-100" />
+            <p className="text-slate-400 text-xs mb-4">Paste directly from Excel. Supports multiple columns (First, Last, DOB).</p>
+            <textarea rows={12} placeholder="Peggy	Green	05/12/2022" value={bulkInput} onChange={(e) => setBulkInput(e.target.value)} className="w-full px-8 py-7 bg-slate-50 border-none rounded-[2rem] outline-none font-mono text-sm shadow-inner focus:ring-4 focus:ring-slate-100" />
             <div className="flex space-x-5 mt-10"><button onClick={() => setIsBulkAdding(false)} className="flex-1 py-5 bg-slate-100 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-400">Cancel</button><button onClick={handleBulkAdd} className="flex-1 py-5 text-white rounded-2xl text-[11px] font-bold uppercase tracking-widest bg-slate-800 shadow-2xl">Upload Data</button></div>
           </div>
         </div>
-      )}
-
-      {/* Relationship Modal */}
-      {relModalData && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
-          <div className="bg-white w-full max-w-md rounded-[3rem] shadow-2xl p-12 flex flex-col max-h-[85vh] animate-in zoom-in-95 overflow-hidden">
-            <div className="flex justify-between items-center mb-8"><h3 className="text-2xl font-bold text-slate-800">Establish Link</h3><button onClick={() => setRelModalData(null)} className="p-3 hover:bg-slate-100 rounded-full transition-all"><X className="w-8 h-8 text-slate-400" /></button></div>
-            <div className="flex space-x-4 mb-8"><button onClick={() => setRelModalData({...relModalData, type: 'S'})} className={`flex-1 py-4 rounded-2xl text-[10px] font-bold uppercase tracking-[0.2em] border-2 transition-all ${relModalData.type === 'S' ? 'bg-indigo-50 border-indigo-200 text-indigo-600 shadow-md' : 'bg-slate-50 border-slate-50 text-slate-300'}`}>Sibling</button><button onClick={() => setRelModalData({...relModalData, type: 'F'})} className={`flex-1 py-4 rounded-2xl text-[10px] font-bold uppercase tracking-[0.2em] border-2 transition-all ${relModalData.type === 'F' ? 'bg-indigo-50 border-indigo-200 text-indigo-600 shadow-md' : 'bg-slate-50 border-slate-50 text-slate-300'}`}>Friend</button></div>
-            <div className="relative mb-8"><Search className="w-6 h-6 absolute left-6 top-1/2 -translate-y-1/2 text-slate-300" /><input type="text" placeholder="Filter roster..." value={relModalData.search} onChange={(e) => setRelModalData({...relModalData, search: e.target.value})} className="w-full pl-16 pr-8 py-5 bg-slate-50 border-none rounded-2xl text-sm font-bold outline-none shadow-inner" /></div>
-            <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
-              {students.filter(s => s.id !== relModalData.sourceId && s.name.toLowerCase().includes(relModalData.search.toLowerCase())).map(s => (
-                <button key={s.id} onClick={() => { handleAddRelationship(relModalData.sourceId, s.id, relModalData.type); setRelModalData(null); }} className="w-full flex items-center justify-between p-5 hover:bg-indigo-50/50 rounded-2xl transition-all border border-transparent hover:border-indigo-100 text-left group">
-                  <p className="text-[14px] font-bold text-slate-800 group-hover:text-indigo-600 transition-colors">{s.name}</p>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Safety Protocol Modals */}
-      {allergyEntry && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8 animate-in fade-in duration-300"><div className="bg-white w-full max-w-lg rounded-[3rem] shadow-2xl p-12 flex flex-col animate-in zoom-in-95"><h3 className="text-2xl font-bold text-slate-800 mb-8 tracking-tight">{allergyEntry.id ? 'Edit Allergy' : 'New Safety Protocol'}</h3><div className="space-y-6"><label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Substance</span><input type="text" autoFocus value={allergyEntry.substance} onChange={e => setAllergyEntry({...allergyEntry, substance: e.target.value})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold shadow-inner focus:ring-2 focus:ring-rose-100 transition-all" /></label><div className="grid grid-cols-3 gap-4">{(['Mild', 'Moderate', 'Severe'] as Allergy['severity'][]).map(sev => (<button key={sev} onClick={() => setAllergyEntry({...allergyEntry, severity: sev})} className={`py-4 rounded-2xl text-[10px] font-bold uppercase tracking-widest transition-all border-2 ${allergyEntry.severity === sev ? 'bg-rose-50 border-rose-200 text-rose-600 shadow-md scale-105' : 'bg-slate-50 border-slate-50 text-slate-400'}`}>{sev}</button>))}</div><label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Last Reacted (MM/DD/YYYY)</span><input type="text" placeholder="MM/DD/YYYY" value={allergyEntry.lastReaction} onChange={e => setAllergyEntry({...allergyEntry, lastReaction: autoFormatDate(e.target.value)})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold shadow-inner" /></label></div><div className="flex space-x-5 mt-12"><button onClick={() => setAllergyEntry(null)} className="flex-1 py-5 bg-slate-100 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-500">Cancel</button><button onClick={() => { if (!allergyEntry.substance) return; const student = students.find(s => s.id === allergyEntry.studentId); if (student) { const newAllergies = allergyEntry.id ? student.allergies.map(a => a.id === allergyEntry.id ? { ...allergyEntry, id: a.id } as Allergy : a) : [...student.allergies, { ...allergyEntry, id: crypto.randomUUID() } as Allergy]; handleUpdateStudent(student.id, { allergies: newAllergies }); showConfirmation("Allergy entry saved"); } setAllergyEntry(null); }} className="flex-1 py-5 text-white rounded-2xl text-[11px] font-bold uppercase bg-rose-600 shadow-xl hover:bg-rose-700 transform hover:scale-105">Save Alert</button></div></div></div>
-      )}
-
-      {medEntry && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8 animate-in fade-in duration-300"><div className="bg-white w-full max-w-lg rounded-[3rem] shadow-2xl p-12 flex flex-col animate-in zoom-in-95"><h3 className="text-2xl font-bold text-slate-800 mb-8 tracking-tight">{medEntry.id ? 'Edit Medication' : 'Enroll Medication'}</h3><div className="space-y-6"><label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Medication Name</span><input type="text" autoFocus value={medEntry.name} onChange={e => setMedEntry({...medEntry, name: e.target.value})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold shadow-inner" /></label><label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Frequency</span><input type="text" value={medEntry.frequency} onChange={e => setMedEntry({...medEntry, frequency: e.target.value})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold shadow-inner" /></label><label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Expiration Date (MM/DD/YYYY)</span><input type="text" placeholder="MM/DD/YYYY" value={medEntry.expiration} onChange={e => setMedEntry({...medEntry, expiration: autoFormatDate(e.target.value)})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold shadow-inner" /></label></div><div className="flex space-x-5 mt-12"><button onClick={() => setMedEntry(null)} className="flex-1 py-5 bg-slate-100 rounded-2xl text-[11px] font-bold uppercase text-slate-500">Cancel</button><button onClick={() => { if (!medEntry.name) return; const student = students.find(s => s.id === medEntry.studentId); if (student) { const newMeds = medEntry.id ? student.medications.map(m => m.id === medEntry.id ? { ...medEntry, expirationDate: medEntry.expiration, id: m.id } as Medication : m) : [...student.medications, { ...medEntry, expirationDate: medEntry.expiration, id: crypto.randomUUID() } as Medication]; handleUpdateStudent(student.id, { medications: newMeds }); showConfirmation("Medication entry saved"); } setMedEntry(null); }} className="flex-1 py-5 text-white rounded-2xl text-[11px] font-bold uppercase bg-indigo-600 shadow-xl hover:bg-indigo-700 transform hover:scale-105">Save Entry</button></div></div></div>
       )}
     </div>
   );
