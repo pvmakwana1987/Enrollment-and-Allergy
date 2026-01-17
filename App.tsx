@@ -176,7 +176,7 @@ const App: React.FC = () => {
     now.setHours(0, 0, 0, 0);
 
     students.forEach(s => {
-      s.medications.forEach(m => {
+      s.medications?.forEach(m => {
         const expDate = parseDate(m.expirationDate);
         if (expDate) {
           const diffDays = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
@@ -309,15 +309,11 @@ const App: React.FC = () => {
     let count = 0;
     
     lines.forEach(line => {
-      // Split by common Excel/CSV separators
       const parts = line.split(/[,\t]/).map(p => p.trim()).filter(Boolean);
       if (parts.length < 2) return;
       
       let detectedName = "";
       let detectedDob = "";
-      
-      // Attempt to find which column is the date
-      // In Excel exports, it's often the last column (Peggy [Tab] Green [Tab] 05/12/2022)
       let dateIndex = -1;
       for (let i = parts.length - 1; i >= 0; i--) {
         if (parseDate(parts[i])) {
@@ -328,10 +324,8 @@ const App: React.FC = () => {
 
       if (dateIndex !== -1) {
         detectedDob = standardizeDateDisplay(parts[dateIndex]);
-        // Combine everything before the date as the name (e.g., "Peggy Green")
         detectedName = parts.slice(0, dateIndex).join(" ");
       } else {
-        // Fallback to simple format if no clear date found
         detectedName = parts[0];
         detectedDob = parts[1];
       }
@@ -351,20 +345,20 @@ const App: React.FC = () => {
       }
     });
 
-    if (count > 0) {
-      try {
+    try {
+      if (count > 0) {
         await batch.commit();
         showConfirmation(`Successfully uploaded ${count} records`);
-      } catch (e) {
-        console.error("Batch Commit Error:", e);
-        showConfirmation("Error: Permission Denied or Connection Failed");
+      } else {
+        showConfirmation("No valid records found. Check format: Name [Tab] Date");
       }
-    } else {
-      showConfirmation("No valid records found. Check format: Name [Tab] Date");
+    } catch (e) {
+      console.error("Batch Commit Error:", e);
+      showConfirmation("Error: Connection Failed");
+    } finally {
+      setIsBulkAdding(false);
+      setBulkInput('');
     }
-    
-    setIsBulkAdding(false);
-    setBulkInput('');
   };
 
   const getTransitiveGroup = (startId: string): Student[] => {
@@ -416,7 +410,6 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex bg-slate-50 font-sans tracking-tight">
-      {/* Sidebar */}
       <aside className="w-72 flex flex-col shadow-xl fixed h-full z-20 overflow-hidden" style={{ backgroundColor: COLORS.brandGreen, color: '#fff' }}>
         <div className="p-8 border-b border-white/5"><PrimroseLogo /></div>
         <nav className="flex-1 px-5 py-8 space-y-2">
@@ -435,9 +428,7 @@ const App: React.FC = () => {
         </nav>
       </aside>
 
-      {/* Main Content */}
       <main className="flex-1 ml-72 p-10 overflow-y-auto">
-        {/* Toast Notification */}
         {toast && (
           <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[9999] bg-slate-900 text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-3 animate-in slide-in-from-top-full duration-300 border border-white/10">
             <CheckCircle2 className="w-5 h-5 text-emerald-400" />
@@ -469,7 +460,6 @@ const App: React.FC = () => {
 
         {activeTab === Tab.DASHBOARD && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-6 duration-700">
-            {/* Dashboard Stats */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 hover:shadow-md transition-all">
                 <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest">Enrollment Total</p>
@@ -485,7 +475,6 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {/* AI Insights */}
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100">
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-lg font-bold text-slate-800 tracking-tight flex items-center gap-2">
@@ -513,7 +502,6 @@ const App: React.FC = () => {
               )}
             </div>
 
-            {/* Capacity Chart */}
             <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100">
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-lg font-bold text-slate-800 tracking-tight">Class Capacity</h3>
@@ -524,7 +512,6 @@ const App: React.FC = () => {
               {!isChartMinimized && <ClassBarChart data={dashboardData} />}
             </div>
 
-            {/* Class Lists */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 items-start">
               {classSettings.filter(c => !c.hidden && !c.isSpecial).map(cls => {
                 const enrolled = students.filter(s => getEffectiveClass(s, projectionDate, classSettings, manualAssignments, manualTransitionDates) === cls.name && !waitlistedAssignments[s.id]);
@@ -561,7 +548,7 @@ const App: React.FC = () => {
                     <div className="p-4 space-y-3 flex-1 max-h-[500px] overflow-y-auto custom-scrollbar">
                       {enrolled.length === 0 ? <div className="h-full flex items-center justify-center py-10 opacity-30 italic text-[11px]">No students assigned</div> : enrolled.map(s => {
                         const transitionDate = getProjectedTransitionDate(s, cls.name, classSettings);
-                        const hasSafetyIssues = s.allergies.length > 0 || s.medications.length > 0;
+                        const hasSafetyIssues = (s.allergies?.length || 0) > 0 || (s.medications?.length || 0) > 0;
                         return (
                           <div key={s.id} draggable onDragStart={(e) => e.dataTransfer.setData("studentId", s.id)} onMouseEnter={() => setHighlightedStudentId(s.id)} onMouseLeave={() => setHighlightedStudentId(null)} className="group relative flex flex-col p-4 rounded-2xl border border-slate-100 bg-slate-50/30 hover:bg-white hover:shadow-md hover:border-slate-200 transition-all cursor-grab active:cursor-grabbing">
                             <div className="flex items-center space-x-2">
@@ -589,7 +576,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Roster Tab */}
         {activeTab === Tab.ROSTER && (
           <div className="animate-in fade-in slide-in-from-bottom-6 duration-700 space-y-8">
             <div className="flex items-center justify-between">
@@ -644,6 +630,7 @@ const App: React.FC = () => {
                               <div className="flex items-center space-x-4">
                                 <button onClick={() => setExpandedStudentId(isExpanded ? null : s.id)} className="p-1.5 hover:bg-slate-100 rounded-xl transition-all">{isExpanded ? <ChevronUp className="w-4.5 h-4.5 text-slate-400" /> : <ChevronDown className="w-4.5 h-4.5 text-slate-400" />}</button>
                                 <span className="font-bold text-[13px] text-slate-800">{s.name}</span>
+                                <button onClick={() => setIsEditingStudent(s)} className="p-1 text-slate-300 hover:text-indigo-600 opacity-0 group-hover:opacity-100 transition-all"><Edit2 className="w-3.5 h-3.5" /></button>
                               </div>
                             </td>
                             <td className="px-8 py-6 text-xs font-bold text-slate-500 text-center">{s.dob}</td>
@@ -662,16 +649,33 @@ const App: React.FC = () => {
                                     <button onClick={() => setRelModalData({ sourceId: s.id, search: '', type: 'S' })} className="w-full py-3.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-2xl text-[10px] font-bold uppercase flex items-center justify-center space-x-3 border border-indigo-100 transition-all shadow-sm"><UserPlus className="w-4 h-4" /><span>Link Connections</span></button>
                                   </div>
                                 </div>
-                                {/* Health panels */}
                                 <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
                                   <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><AlertCircle className="w-4 h-4 text-rose-500" /><span>Safety Profile</span></h5>
-                                  <div className="space-y-3">{s.allergies?.map(a => (<div key={a.id} className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center group/item border border-slate-100 shadow-sm"><div><p className="text-[11px] font-bold text-slate-800">{a.substance}</p></div></div>))}
-                                  <button onClick={() => setAllergyEntry({ studentId: s.id, substance: '', severity: 'Moderate', lastReaction: '', comments: '' })} className="w-full py-3 bg-rose-50/50 text-rose-600 rounded-2xl text-[10px] font-bold uppercase border-2 border-dashed border-rose-100 flex items-center justify-center space-x-3 transition-all hover:bg-rose-50"><PlusCircle className="w-4 h-4" /><span>Add Allergy</span></button></div>
+                                  <div className="space-y-3">
+                                    {s.allergies?.map(a => (
+                                      <div key={a.id} className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center group/item border border-slate-100 shadow-sm">
+                                        <div><p className="text-[11px] font-bold text-slate-800">{a.substance}</p><p className={`text-[8px] font-bold uppercase ${a.severity === 'Severe' ? 'text-rose-500' : 'text-slate-400'}`}>{a.severity}</p></div>
+                                        <div className="flex items-center space-x-1 opacity-0 group-hover/item:opacity-100">
+                                          <button onClick={() => setAllergyEntry({ studentId: s.id, ...a })} className="p-2 hover:text-indigo-600"><Edit2 className="w-3.5 h-3.5" /></button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                    <button onClick={() => setAllergyEntry({ studentId: s.id, substance: '', severity: 'Moderate', lastReaction: '', comments: '' })} className="w-full py-3 bg-rose-50/50 text-rose-600 rounded-2xl text-[10px] font-bold uppercase border-2 border-dashed border-rose-100 flex items-center justify-center space-x-3 transition-all hover:bg-rose-50"><PlusCircle className="w-4 h-4" /><span>Add Allergy</span></button>
+                                  </div>
                                 </div>
                                 <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
                                   <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><Pill className="w-4 h-4 text-indigo-500" /><span>Medications</span></h5>
-                                  <div className="space-y-3">{s.medications?.map(m => (<div key={m.id} className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center group/item border border-slate-100 shadow-sm"><div><p className="text-[11px] font-bold text-slate-800">{m.name}</p><p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Exp: {m.expirationDate}</p></div></div>))}
-                                  <button onClick={() => setMedEntry({ studentId: s.id, name: '', frequency: '', expiration: '' })} className="w-full py-3 bg-indigo-50/50 text-indigo-600 rounded-2xl text-[10px] font-bold uppercase border-2 border-dashed border-indigo-100 flex items-center justify-center space-x-3 transition-all hover:bg-indigo-50"><PlusCircle className="w-4 h-4" /><span>Add Medication</span></button></div>
+                                  <div className="space-y-3">
+                                    {s.medications?.map(m => (
+                                      <div key={m.id} className="p-4 bg-slate-50 rounded-2xl flex justify-between items-center group/item border border-slate-100 shadow-sm">
+                                        <div><p className="text-[11px] font-bold text-slate-800">{m.name}</p><p className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Exp: {m.expirationDate}</p></div>
+                                        <div className="flex items-center space-x-1 opacity-0 group-hover/item:opacity-100">
+                                          <button onClick={() => setMedEntry({ studentId: s.id, ...m, expiration: m.expirationDate })} className="p-2 hover:text-indigo-600"><Edit2 className="w-3.5 h-3.5" /></button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                    <button onClick={() => setMedEntry({ studentId: s.id, name: '', frequency: '', expiration: '' })} className="w-full py-3 bg-indigo-50/50 text-indigo-600 rounded-2xl text-[10px] font-bold uppercase border-2 border-dashed border-indigo-100 flex items-center justify-center space-x-3 transition-all hover:bg-indigo-50"><PlusCircle className="w-4 h-4" /><span>Add Medication</span></button>
+                                  </div>
                                 </div>
                                 <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-slate-100 space-y-6">
                                   <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] flex items-center space-x-3"><FileText className="w-4 h-4" /><span>Documentation</span></h5>
@@ -690,7 +694,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Configurations Tab */}
         {activeTab === Tab.SETTINGS && (
           <div className="animate-in fade-in slide-in-from-bottom-8 duration-700 space-y-10 max-w-5xl mx-auto">
             <div className="bg-white p-16 rounded-[4rem] shadow-sm border border-slate-100">
@@ -716,7 +719,7 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Modals */}
+      {/* Enrollment Modals */}
       {isAddingStudent && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
           <div className="bg-white w-full max-w-sm rounded-[3.5rem] shadow-2xl p-12 animate-in zoom-in-95 duration-300">
@@ -736,12 +739,26 @@ const App: React.FC = () => {
             <h2 className="text-3xl font-bold mb-10 text-slate-800 text-center tracking-tight">Edit Identity</h2>
             <form onSubmit={async (e) => {
               e.preventDefault();
-              await handleUpdateStudent(isEditingStudent.id, { name: isEditingStudent.name, dob: standardizeDateDisplay(isEditingStudent.dob) });
+              await handleUpdateStudent(isEditingStudent.id, { 
+                name: isEditingStudent.name, 
+                dob: standardizeDateDisplay(isEditingStudent.dob),
+                isStaffChild: isEditingStudent.isStaffChild,
+                fte: Number(isEditingStudent.fte) || 1.0
+              });
               setIsEditingStudent(null);
               showConfirmation("Student updated successfully");
-            }} className="space-y-8">
-              <label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block ml-1">Legal Name</span><input autoFocus type="text" required value={isEditingStudent.name} onChange={(e) => setIsEditingStudent({...isEditingStudent, name: e.target.value})} className="w-full px-6 py-5 bg-slate-50 border-none rounded-2xl text-[18px] font-bold text-slate-800 shadow-inner" /></label>
-              <label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block ml-1">Birth Date (MM/DD/YYYY)</span><input type="text" placeholder="MM/DD/YYYY" required value={isEditingStudent.dob} onChange={(e) => setIsEditingStudent({...isEditingStudent, dob: autoFormatDate(e.target.value)})} className="w-full px-6 py-5 bg-slate-50 border-none rounded-2xl text-base font-bold text-slate-800 shadow-inner" /></label>
+            }} className="space-y-6">
+              <label className="block space-y-1"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block ml-1">Legal Name</span><input autoFocus type="text" required value={isEditingStudent.name} onChange={(e) => setIsEditingStudent({...isEditingStudent, name: e.target.value})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold text-slate-800 shadow-inner" /></label>
+              <label className="block space-y-1"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block ml-1">Birth Date</span><input type="text" required value={isEditingStudent.dob} onChange={(e) => setIsEditingStudent({...isEditingStudent, dob: autoFormatDate(e.target.value)})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold text-slate-800 shadow-inner" /></label>
+              <div className="grid grid-cols-2 gap-4">
+                <label className="block space-y-1"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block ml-1">FTE</span><input type="number" step="0.1" value={isEditingStudent.fte} onChange={(e) => setIsEditingStudent({...isEditingStudent, fte: parseFloat(e.target.value)})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold text-slate-800 shadow-inner" /></label>
+                <div className="flex items-end pb-1">
+                  <label className="flex items-center space-x-3 cursor-pointer p-4 bg-slate-50 rounded-2xl w-full">
+                    <input type="checkbox" checked={isEditingStudent.isStaffChild} onChange={(e) => setIsEditingStudent({...isEditingStudent, isStaffChild: e.target.checked})} className="w-5 h-5 rounded text-indigo-600" />
+                    <span className="text-[10px] font-bold uppercase text-slate-600">Staff Child</span>
+                  </label>
+                </div>
+              </div>
               <div className="flex space-x-5 pt-4"><button type="button" onClick={() => setIsEditingStudent(null)} className="flex-1 py-5 bg-slate-100 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-400">Cancel</button><button type="submit" className="flex-1 py-5 text-white rounded-2xl text-[11px] font-bold uppercase tracking-widest bg-slate-800 shadow-2xl hover:bg-slate-900">Update</button></div>
             </form>
           </div>
@@ -752,9 +769,80 @@ const App: React.FC = () => {
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
           <div className="bg-white w-full max-w-2xl rounded-[3.5rem] shadow-2xl p-14 animate-in slide-in-from-top-12 duration-500">
             <h2 className="text-3xl font-bold mb-8 text-slate-800 tracking-tight">Bulk Registry Upload</h2>
-            <p className="text-slate-400 text-xs mb-4">Paste directly from Excel. Supports multiple columns (First, Last, DOB).</p>
+            <p className="text-slate-400 text-xs mb-4">Paste directly from Excel. Supports format: Peggy [Tab] Green [Tab] 05/12/2022</p>
             <textarea rows={12} placeholder="Peggy	Green	05/12/2022" value={bulkInput} onChange={(e) => setBulkInput(e.target.value)} className="w-full px-8 py-7 bg-slate-50 border-none rounded-[2rem] outline-none font-mono text-sm shadow-inner focus:ring-4 focus:ring-slate-100" />
             <div className="flex space-x-5 mt-10"><button onClick={() => setIsBulkAdding(false)} className="flex-1 py-5 bg-slate-100 rounded-2xl text-[11px] font-bold uppercase tracking-widest text-slate-400">Cancel</button><button onClick={handleBulkAdd} className="flex-1 py-5 text-white rounded-2xl text-[11px] font-bold uppercase tracking-widest bg-slate-800 shadow-2xl">Upload Data</button></div>
+          </div>
+        </div>
+      )}
+
+      {allergyEntry && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
+          <div className="bg-white w-full max-w-lg rounded-[3rem] shadow-2xl p-12 flex flex-col">
+            <h3 className="text-2xl font-bold text-slate-800 mb-8 tracking-tight">{allergyEntry.id ? 'Edit Allergy' : 'Add Allergy'}</h3>
+            <div className="space-y-6">
+              <label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Substance</span><input type="text" autoFocus value={allergyEntry.substance} onChange={e => setAllergyEntry({...allergyEntry, substance: e.target.value})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold shadow-inner" /></label>
+              <div className="grid grid-cols-3 gap-4">{(['Mild', 'Moderate', 'Severe'] as Allergy['severity'][]).map(sev => (<button key={sev} onClick={() => setAllergyEntry({...allergyEntry, severity: sev})} className={`py-4 rounded-2xl text-[10px] font-bold uppercase tracking-widest transition-all border-2 ${allergyEntry.severity === sev ? 'bg-rose-50 border-rose-200 text-rose-600 shadow-md scale-105' : 'bg-slate-50 border-slate-50 text-slate-400'}`}>{sev}</button>))}</div>
+            </div>
+            <div className="flex space-x-5 mt-12">
+              <button onClick={() => setAllergyEntry(null)} className="flex-1 py-5 bg-slate-100 rounded-2xl text-[11px] font-bold uppercase text-slate-500">Cancel</button>
+              <button onClick={async () => {
+                const student = students.find(s => s.id === allergyEntry.studentId);
+                if (student) {
+                  const existingAllergies = student.allergies || [];
+                  const newAllergies = allergyEntry.id 
+                    ? existingAllergies.map(a => a.id === allergyEntry.id ? { ...allergyEntry, id: a.id } as Allergy : a)
+                    : [...existingAllergies, { ...allergyEntry, id: crypto.randomUUID() } as Allergy];
+                  await handleUpdateStudent(student.id, { allergies: newAllergies });
+                  showConfirmation("Allergy entry saved");
+                }
+                setAllergyEntry(null);
+              }} className="flex-1 py-5 text-white rounded-2xl text-[11px] font-bold uppercase bg-rose-600 shadow-xl hover:bg-rose-700 transform hover:scale-105">Save Alert</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {medEntry && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
+          <div className="bg-white w-full max-w-lg rounded-[3rem] shadow-2xl p-12 flex flex-col">
+            <h3 className="text-2xl font-bold text-slate-800 mb-8 tracking-tight">{medEntry.id ? 'Edit Medication' : 'Enroll Medication'}</h3>
+            <div className="space-y-6">
+              <label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Medication Name</span><input type="text" autoFocus value={medEntry.name} onChange={e => setMedEntry({...medEntry, name: e.target.value})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold shadow-inner" /></label>
+              <label className="block space-y-2"><span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Expiration Date</span><input type="text" placeholder="MM/DD/YYYY" value={medEntry.expiration} onChange={e => setMedEntry({...medEntry, expiration: autoFormatDate(e.target.value)})} className="w-full px-6 py-4 bg-slate-50 border-none rounded-2xl text-base font-bold shadow-inner" /></label>
+            </div>
+            <div className="flex space-x-5 mt-12">
+              <button onClick={() => setMedEntry(null)} className="flex-1 py-5 bg-slate-100 rounded-2xl text-[11px] font-bold uppercase text-slate-500">Cancel</button>
+              <button onClick={async () => {
+                const student = students.find(s => s.id === medEntry.studentId);
+                if (student) {
+                  const existingMeds = student.medications || [];
+                  const newMeds = medEntry.id 
+                    ? existingMeds.map(m => m.id === medEntry.id ? { ...medEntry, expirationDate: medEntry.expiration, id: m.id } as Medication : m)
+                    : [...existingMeds, { ...medEntry, expirationDate: medEntry.expiration, id: crypto.randomUUID() } as Medication];
+                  await handleUpdateStudent(student.id, { medications: newMeds });
+                  showConfirmation("Medication entry saved");
+                }
+                setMedEntry(null);
+              }} className="flex-1 py-5 text-white rounded-2xl text-[11px] font-bold uppercase bg-indigo-600 shadow-xl hover:bg-indigo-700 transform hover:scale-105">Save Entry</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {relModalData && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[9999] flex items-center justify-center p-8">
+          <div className="bg-white w-full max-w-md rounded-[3rem] shadow-2xl p-12 flex flex-col max-h-[85vh] animate-in zoom-in-95 overflow-hidden">
+            <div className="flex justify-between items-center mb-8"><h3 className="text-2xl font-bold text-slate-800">Establish Link</h3><button onClick={() => setRelModalData(null)} className="p-3 hover:bg-slate-100 rounded-full transition-all"><X className="w-8 h-8 text-slate-400" /></button></div>
+            <div className="flex space-x-4 mb-8"><button onClick={() => setRelModalData({...relModalData, type: 'S'})} className={`flex-1 py-4 rounded-2xl text-[10px] font-bold uppercase tracking-[0.2em] border-2 transition-all ${relModalData.type === 'S' ? 'bg-indigo-50 border-indigo-200 text-indigo-600 shadow-md' : 'bg-slate-50 border-slate-50 text-slate-300'}`}>Sibling</button><button onClick={() => setRelModalData({...relModalData, type: 'F'})} className={`flex-1 py-4 rounded-2xl text-[10px] font-bold uppercase tracking-[0.2em] border-2 transition-all ${relModalData.type === 'F' ? 'bg-indigo-50 border-indigo-200 text-indigo-600 shadow-md' : 'bg-slate-50 border-slate-50 text-slate-300'}`}>Friend</button></div>
+            <div className="relative mb-8"><Search className="w-6 h-6 absolute left-6 top-1/2 -translate-y-1/2 text-slate-300" /><input type="text" placeholder="Filter roster..." value={relModalData.search} onChange={(e) => setRelModalData({...relModalData, search: e.target.value})} className="w-full pl-16 pr-8 py-5 bg-slate-50 border-none rounded-2xl text-sm font-bold outline-none shadow-inner" /></div>
+            <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
+              {students.filter(s => s.id !== relModalData.sourceId && s.name.toLowerCase().includes(relModalData.search.toLowerCase())).map(s => (
+                <button key={s.id} onClick={() => { handleAddRelationship(relModalData.sourceId, s.id, relModalData.type); setRelModalData(null); }} className="w-full flex items-center justify-between p-5 hover:bg-indigo-50/50 rounded-2xl transition-all border border-transparent hover:border-indigo-100 text-left group">
+                  <p className="text-[14px] font-bold text-slate-800 group-hover:text-indigo-600 transition-colors">{s.name}</p>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       )}
